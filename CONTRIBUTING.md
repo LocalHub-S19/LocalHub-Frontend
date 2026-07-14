@@ -1,8 +1,5 @@
 # LocalHub 협업 및 Git 규칙
 
-| [🏠 README](./README.md) | [🤝 협업 및 Git 규칙](./CONTRIBUTING.md) |
-|---|---|
-
 이 문서는 LocalHub 프로젝트의 브랜치, 커밋, Merge Request 및 협업 규칙을 정의합니다.
 
 프론트엔드와 백엔드 저장소에 동일한 규칙을 적용합니다.
