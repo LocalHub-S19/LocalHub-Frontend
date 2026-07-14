@@ -135,21 +135,57 @@ watch(id, load)
 </style>
 
 <style scoped>
-/* Layout */
-.detail-page { max-width:980px; margin:0 auto; padding:18px; box-sizing:border-box; }
-.breadcrumb { color:var(--muted); font-size:13px; margin-bottom:12px; }
-
-/* Post card */
-.post-card {
-  background:#fff; padding:20px; border-radius:8px; box-shadow: 0 6px 24px rgba(2,6,23,0.04);
-  display:flex; flex-direction:column; gap:18px;
+/* Container: responsive but consistent across posts */
+.detail-page {
+  max-width: 980px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 18px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  min-width: 0;
 }
+
+/* Keep main card stable: always fill container width and avoid content-driven expansion */
+.post-card {
+  background: #fff;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(2,6,23,0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+/* Header */
 .post-header { display:flex; flex-direction:column; gap:6px; }
-.post-title { margin:0; font-size:20px; color:#0f172a; }
+.post-title { margin:0; font-size:20px; color:#0f172a; word-break: break-word; overflow-wrap: anywhere; }
 .post-meta { color:var(--muted); font-size:13px; }
 
-.post-body { flex:1; }
-.post-text { color:#374151; line-height:1.8; white-space:pre-wrap; }
+/* Body: prevent content from forcing layout */
+.post-body { flex:1; width:100%; box-sizing:border-box; min-width:0; }
+.post-text {
+  color:#374151;
+  line-height:1.8;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  word-break: break-word;
+  hyphens: auto;
+  max-width:100%;
+  box-sizing:border-box;
+}
+
+/* Ensure media scale inside content */
+.post-body img,
+.post-body iframe,
+.post-body video {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
 
 /* Actions placed under content */
 .post-actions {
@@ -214,11 +250,20 @@ watch(id, load)
   outline: none;
 }
 
-/* Recent posts block */
-.recent-block { margin-top:18px; background:#fff; padding:14px; border-radius:8px; box-shadow: 0 6px 20px rgba(2,6,23,0.04); }
-.recent-title { margin:0 0 12px; font-size:16px; color:#0f172a; }
+/* Recent posts block: stable width and box-sizing */
+.recent-block {
+  margin-top: 18px;
+  background:#fff;
+  padding:14px;
+  border-radius:8px;
+  box-shadow: 0 6px 20px rgba(2,6,23,0.04);
+  box-sizing: border-box;
+  width:100%;
+  min-width: 0;
+}
 
 /* clickable title style */
+.recent-title { margin:0 0 12px; font-size:16px; color:#0f172a; }
 .recent-title.link {
   background: none;
   border: none;
@@ -228,22 +273,66 @@ watch(id, load)
   cursor: pointer;
 }
 
-/* make recent cards keyboard-focusable */
-.recent-grid { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; list-style:none; padding:0; margin:0; }
-.recent-card { border:1px solid #eef2f7; padding:12px; border-radius:8px; cursor:pointer; background: #fff; outline: none; }
+/* Recent grid: equal columns that don't expand with content */
+.recent-grid {
+  display:grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap:12px;
+  list-style:none;
+  padding:0;
+  margin:0;
+  min-width:0;
+  box-sizing:border-box;
+}
+
+/* Each card: ensure it cannot force wider layout */
+.recent-card {
+  border:1px solid #eef2f7;
+  padding:12px;
+  border-radius:8px;
+  cursor:pointer;
+  background: #fff;
+  outline: none;
+  box-sizing: border-box;
+  min-width: 0;
+}
 .recent-card:focus { box-shadow: 0 6px 20px rgba(37,99,235,0.08); border-color: rgba(37,99,235,0.12); }
 
-.recent-row-top { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }
-.recent-name { font-weight:600; color:#0f172a; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.recent-date { color:#9ca3af; font-size:12px; }
-.recent-excerpt { margin:0; color:#374151; font-size:13px; line-height:1.4; height:36px; overflow:hidden; }
-.no-recent { color:var(--muted); padding:12px 0; }
+/* Use flex on the top row so name and date keep stable widths */
+.recent-row-top { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+.recent-name {
+  font-weight:600;
+  color:#0f172a;
+  font-size:14px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.recent-date {
+  color:#9ca3af;
+  font-size:12px;
+  flex: 0 0 80px;
+  text-align: right;
+  white-space:nowrap;
+}
 
-/* Modal - ensure topmost and visible */
+/* Excerpt: keep fixed height to avoid pushing layout */
+.recent-excerpt {
+  margin:0;
+  color:#374151;
+  font-size:13px;
+  line-height:1.4;
+  height:36px;
+  overflow:hidden;
+  overflow-wrap:anywhere;
+  word-break: break-word;
+}
+
+/* Modal - ensure not to push layout */
 .modal-backdrop { position: fixed; inset:0; display:flex; align-items:center; justify-content:center; background: rgba(2,6,23,0.5); z-index:9999; }
-.modal { width:380px; background:#fff; padding:18px; border-radius:8px; box-shadow: 0 14px 60px rgba(2,6,23,0.28); z-index:10000; }
-.modal h3 { margin:0 0 8px; text-align:center; color:#0f172a; font-weight:700; }
-.modal input { width:100%; padding:8px 10px; border-radius:6px; border:1px solid #e6edf3; margin-top:8px; box-sizing:border-box; }
+.modal { width:380px; max-width: calc(100% - 40px); background:#fff; padding:18px; border-radius:8px; box-shadow: 0 14px 60px rgba(2,6,23,0.28); z-index:10000; }
 
 /* Modal buttons - visible and high specificity */
 .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
@@ -263,7 +352,7 @@ watch(id, load)
 /* error */
 .err { color:#ef4444; margin-top:8px; font-size:13px; }
 
-/* Responsive */
+/* Responsive: keep structure but reduce columns */
 @media (max-width:980px) { .recent-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width:640px) {
   .recent-grid { grid-template-columns: 1fr; }
