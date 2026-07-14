@@ -1,11 +1,11 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 const BOARD_KEY = 'localhub_boards'
 const route = useRoute()
 const router = useRouter()
-const id = route.params.id
+const id = computed(() => route.params.id)
 const item = ref(null)
 
 const pwModal = ref(false)
@@ -19,10 +19,10 @@ function load() {
   const raw = localStorage.getItem(BOARD_KEY)
   if (!raw) { item.value = null; recentPosts.value = []; return }
   const arr = JSON.parse(raw)
-  item.value = arr.find(x => String(x.id) === String(id)) || null
+  item.value = arr.find(x => String(x.id) === String(id.value)) || null
 
   // recent posts: newest first, exclude current, take up to 4
-  recentPosts.value = arr.slice().reverse().filter(x => String(x.id) !== String(id)).slice(0, 4)
+  recentPosts.value = arr.slice().reverse().filter(x => String(x.id) !== String(id.value)).slice(0, 4)
 }
 
 function askEdit() { actionType.value = 'edit'; inputPw.value=''; error.value=''; pwModal.value = true }
@@ -32,11 +32,11 @@ function confirmPw() {
   if (!item.value) return
   if ((item.value.password || '') === inputPw.value) {
     pwModal.value = false
-    if (actionType.value === 'edit') router.push(`/board/edit/${id}`)
+    if (actionType.value === 'edit') router.push(`/board/edit/${id.value}`)
     if (actionType.value === 'delete') {
       const raw = localStorage.getItem(BOARD_KEY)
       if (!raw) return
-      const arr = JSON.parse(raw).filter(x => String(x.id) !== String(id))
+      const arr = JSON.parse(raw).filter(x => String(x.id) !== String(id.value))
       localStorage.setItem(BOARD_KEY, JSON.stringify(arr))
       router.push('/board')
     }
@@ -49,7 +49,12 @@ function openDetail(pid) {
   router.push(`/board/${pid}`)
 }
 
+function goList() {
+  router.push('/board')
+}
+
 onMounted(load)
+watch(id, load)
 </script>
 
 <template>
@@ -78,9 +83,18 @@ onMounted(load)
 
     <!-- Recent posts under the article -->
     <section class="recent-block" v-if="recentPosts.length">
-      <h3 class="recent-title">게시글 목록</h3>
+      <button class="recent-title link" @click="goList" aria-label="게시글 목록으로 이동">게시글 목록</button>
       <ul class="recent-grid">
-        <li v-for="p in recentPosts" :key="p.id" class="recent-card" @click="openDetail(p.id)">
+        <li
+          v-for="p in recentPosts"
+          :key="p.id"
+          class="recent-card"
+          @click="openDetail(p.id)"
+          @keydown.enter.prevent="openDetail(p.id)"
+          tabindex="0"
+          role="button"
+          :aria-label="`게시글 ${p.title} 열기`"
+        >
           <div class="recent-row-top">
             <span class="recent-name">{{ p.title }}</span>
             <span class="recent-date">{{ p.createdAt }}</span>
@@ -110,6 +124,7 @@ onMounted(load)
     </div>
   </div>
 </template>
+
 <style>
 :root{
   --blue-700: #1f3fb8;
@@ -118,14 +133,8 @@ onMounted(load)
   --blue-500: #2563eb;
 }
 </style>
-<style scoped>
-:root{
-  --blue-700: #1f3fb8;
-  --red-600: #dc2626;
-  --muted: #6b7280;
-  --blue-500: #2563eb;
-}
 
+<style scoped>
 /* Layout */
 .detail-page { max-width:980px; margin:0 auto; padding:18px; box-sizing:border-box; }
 .breadcrumb { color:var(--muted); font-size:13px; margin-bottom:12px; }
@@ -208,8 +217,22 @@ onMounted(load)
 /* Recent posts block */
 .recent-block { margin-top:18px; background:#fff; padding:14px; border-radius:8px; box-shadow: 0 6px 20px rgba(2,6,23,0.04); }
 .recent-title { margin:0 0 12px; font-size:16px; color:#0f172a; }
+
+/* clickable title style */
+.recent-title.link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-weight: 700;
+  color: var(--blue-700);
+  cursor: pointer;
+}
+
+/* make recent cards keyboard-focusable */
 .recent-grid { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; list-style:none; padding:0; margin:0; }
-.recent-card { border:1px solid #eef2f7; padding:12px; border-radius:8px; cursor:pointer; background: #fff; }
+.recent-card { border:1px solid #eef2f7; padding:12px; border-radius:8px; cursor:pointer; background: #fff; outline: none; }
+.recent-card:focus { box-shadow: 0 6px 20px rgba(37,99,235,0.08); border-color: rgba(37,99,235,0.12); }
+
 .recent-row-top { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }
 .recent-name { font-weight:600; color:#0f172a; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .recent-date { color:#9ca3af; font-size:12px; }
