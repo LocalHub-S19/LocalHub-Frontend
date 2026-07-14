@@ -1,11 +1,30 @@
-<script setup></script>
+<script setup>
+import CommonHeader from './components/CommonHeader.vue'
+import ChatbotModal from './components/ChatbotModal.vue'
+</script>
 
 <template>
-  <h1>You did it!</h1>
-  <p>
-    Visit <a href="https://vuejs.org/" target="_blank" rel="noopener">vuejs.org</a> to read the
-    documentation
-  </p>
+  <div id="app">
+    <CommonHeader />
+    <main class="page-container">
+      <router-view />
+    </main>
+    <ChatbotModal />
+  </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+#app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-container {
+  flex: 1;
+  padding: 24px;
+  max-width: 980px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+</style>
