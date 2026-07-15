@@ -8,9 +8,10 @@ import { API } from '@/api.js'
  * 1. 챗봇 답변의 제목·문단·목록·강조 표현을 보기 좋게 렌더링
  * 2. 응답 대기 중 로딩 말풍선과 중복 전송 방지 추가
  * 3. 백엔드 references를 장소/게시글 카드로 표시
- * 4. 프론트에서 사용하지 않는 latitude, longitude는 UI 상태에서 제외
- * 5. 게시글 참고자료는 상세 페이지로 이동 가능
- * 6. 모바일 화면에서 하단 시트 형태로 보이도록 반응형 개선
+ * 4. 장소 참고자료에 대표 이미지가 있으면 카드 상단에 표시
+ * 5. 프론트에서 사용하지 않는 latitude, longitude는 UI 상태에서 제외
+ * 6. 게시글 참고자료는 상세 페이지로 이동 가능
+ * 7. 모바일 화면에서 하단 시트 형태로 보이도록 반응형 개선
  */
 
 const router = useRouter()
@@ -56,6 +57,28 @@ function close() {
 }
 
 /**
+ * 관광 데이터의 일부 이미지 주소가 http로 저장된 경우,
+ * HTTPS로 배포된 프론트에서 차단되지 않도록 https로 보정합니다.
+ */
+function normalizeReferenceImageUrl(value) {
+  if (!value) {
+    return null
+  }
+
+  const imageUrl = String(value).trim()
+
+  if (!imageUrl) {
+    return null
+  }
+
+  if (imageUrl.startsWith('http://')) {
+    return `https://${imageUrl.slice('http://'.length)}`
+  }
+
+  return imageUrl
+}
+
+/**
  * 백엔드가 보낸 references 중 화면에 필요한 정보만 추립니다.
  * latitude, longitude는 현재 챗봇 카드에서 사용하지 않으므로 저장하지 않습니다.
  */
@@ -74,6 +97,14 @@ function normalizeReferences(references) {
       category: item?.category ? String(item.category).trim() : null,
       address: item?.address ? String(item.address).trim() : null,
       tel: item?.tel ? String(item.tel).trim() : null,
+      // [추가] 신규 image_url을 우선 사용하고,
+      // 이전 응답 형식도 함께 받을 수 있도록 호환 처리합니다.
+      imageUrl: normalizeReferenceImageUrl(
+        item?.image_url
+        ?? item?.thumbnail_image
+        ?? item?.first_image,
+      ),
+      imageFailed: false,
       snippet: item?.snippet ? String(item.snippet).trim() : null,
       tags: Array.isArray(item?.tags)
         ? item.tags.map((tag) => String(tag).trim()).filter(Boolean)
@@ -392,6 +423,10 @@ function formatDate(value) {
   }).format(date)
 }
 
+function handleReferenceImageError(reference) {
+  reference.imageFailed = true
+}
+
 function openReference(reference) {
   if (reference.type !== 'post') {
     return
@@ -586,7 +621,26 @@ function isCopied(reference) {
                   :key="`${reference.type}-${reference.id}`"
                   class="reference-card"
                 >
-                  <div class="reference-card__meta">
+                  <div
+                    v-if="(
+                      reference.type === 'location'
+                      && reference.imageUrl
+                      && !reference.imageFailed
+                    )"
+                    class="reference-card__image-wrap"
+                  >
+                    <img
+                      class="reference-card__image"
+                      :src="reference.imageUrl"
+                      :alt="`${reference.title} 대표 이미지`"
+                      loading="lazy"
+                      referrerpolicy="no-referrer"
+                      @error="handleReferenceImageError(reference)"
+                    />
+                  </div>
+
+                  <div class="reference-card__body">
+                    <div class="reference-card__meta">
                     <span
                       :class="[
                         'reference-type',
@@ -628,28 +682,29 @@ function isCopied(reference) {
                     </span>
                   </div>
 
-                  <div class="reference-card__footer">
-                    <time v-if="reference.createdAt">
-                      {{ formatDate(reference.createdAt) }}
-                    </time>
+                    <div class="reference-card__footer">
+                      <time v-if="reference.createdAt">
+                        {{ formatDate(reference.createdAt) }}
+                      </time>
 
-                    <button
-                      v-if="reference.type === 'post'"
-                      type="button"
-                      class="reference-action"
-                      @click="openReference(reference)"
-                    >
-                      게시글 보기
-                    </button>
+                      <button
+                        v-if="reference.type === 'post'"
+                        type="button"
+                        class="reference-action"
+                        @click="openReference(reference)"
+                      >
+                        게시글 보기
+                      </button>
 
-                    <button
-                      v-else-if="reference.address"
-                      type="button"
-                      class="reference-action"
-                      @click="copyAddress(reference)"
-                    >
-                      {{ isCopied(reference) ? '복사됨' : '주소 복사' }}
-                    </button>
+                      <button
+                        v-else-if="reference.address"
+                        type="button"
+                        class="reference-action"
+                        @click="copyAddress(reference)"
+                      >
+                        {{ isCopied(reference) ? '복사됨' : '주소 복사' }}
+                      </button>
+                    </div>
                   </div>
                 </article>
               </div>
@@ -995,11 +1050,36 @@ function isCopied(reference) {
 
 .reference-card {
   margin-top: 8px;
-  padding: 12px;
+  overflow: hidden;
   border: 1px solid #dbeafe;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 5px 16px rgba(15, 23, 42, 0.05);
+}
+
+.reference-card__image-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, #dbeafe, #eef2ff);
+}
+
+.reference-card__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.25s ease;
+}
+
+.reference-card:hover .reference-card__image {
+  transform: scale(1.025);
+}
+
+.reference-card__body {
+  padding: 12px;
 }
 
 .reference-card__meta {
