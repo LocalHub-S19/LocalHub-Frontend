@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { API } from '@/api.js'
 
 const BOARD_KEY = 'localhub_boards'
 const router = useRouter()
@@ -58,39 +59,18 @@ function formatListDate(dateString) {
   return `${MM}.${DD} ${HH}:${mm}`;
 }
 
-function load() {
-  const raw = localStorage.getItem(BOARD_KEY)
-  if (!raw) {
-    const seed = []
-    const defaultCategories = ['자유', '관광', '행사', '문화', '쇼핑']
-    const now = new Date()
-
-    for (let i = 1; i <= 13; i++) {
-      const d = new Date(now.getTime())
-      if (i <= 3) {
-        // 최근 글 3개는 24시간 이내로 포맷 확인 유도 (예: 1시간, 4시간, 7시간 전)
-        d.setHours(now.getHours() - (i * 3))
-      } else {
-        // 그 외 오래된 글은 24시간 이후로 포맷 확인 유도
-        d.setDate(now.getDate() - (i - 2))
-        d.setHours(11, 11, 0) // 테스트 시각 11:11 지정
-      }
-
-      seed.push({
-        post_id: String(100 + i),
-        category: defaultCategories[i % 5],
-        title: `선정 권역 핫이슈 정보 공유글 ${i}`,
-        content: `본문 샘플 테스트 정보 ${i}입니다. 많은 참여 부탁드립니다.`,
-        views: 22 + (i * 9),
-        created_at: d.toISOString()
-      })
-    }
-    localStorage.setItem(BOARD_KEY, JSON.stringify(seed))
-    all.value = seed
-  } else {
-    all.value = JSON.parse(raw)
+async function load() {
+  try {
+    const response = await fetch(API.POSTS)
+    const data = await response.json()
+    
+    // 💡 data.items를 넣어주어야 배열로 인식해서 화면에 정상 출력됩니다.
+    all.value = data.items || [] 
+  } catch (error) {
+    console.error('글 목록 불러오기 실패:', error)
   }
 
+  // 탭 연동 로직
   const queryCategory = route.query.category
   if (queryCategory && categories.includes(queryCategory)) {
     selectedCategory.value = queryCategory
@@ -179,7 +159,7 @@ function goPage(n) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(b, idx) in pageItems" :key="b.post_id" class="row" @click="openDetail(b.post_id)">
+          <tr v-for="(b, idx) in pageItems" :key="b.id" class="row" @click="openDetail(b.id)">
             <td class="num">{{ (filtered.length - ((page-1)*perPage) ) - idx }}</td>
             <td class="title">
               <div class="title-content">

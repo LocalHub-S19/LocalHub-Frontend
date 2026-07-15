@@ -1,5 +1,6 @@
 <script setup>
 import { ref, nextTick } from 'vue'
+import { API } from '@/api.js' // 💡 백엔드 API 주소를 가져옵니다!
 
 const open = ref(false)
 const input = ref('')
@@ -12,18 +13,63 @@ function toggle() {
   if (open.value) scrollBottom()
 }
 
-function send() {
+// 💡 백엔드 AI 챗봇 실제 연동 비동기 처리
+async function send() {
   const text = input.value && input.value.trim()
   if (!text) return
+
+  // 💡 1. 백엔드 명세서에 맞춰 기존 대화 내역(history)을 조립합니다.
+  // 백엔드는 봇의 역할을 보통 'assistant' 또는 'bot'으로 인식합니다.
+  const historyData = messages.value.map(m => ({
+    role: m.from === 'user' ? 'user' : 'assistant', 
+    content: m.text
+  }))
+
   const id = Date.now()
-  messages.value.push({ id, from: 'user', text })
+  messages.value.push({ id, from: 'user', text }) // 화면에 내 메시지 띄우기
   input.value = ''
-  // simple mock reply
-  setTimeout(() => {
-    messages.value.push({ id: `${id}-r`, from: 'bot', text: `예시 응답: "${text}"` })
-    scrollBottom()
-  }, 400)
+  
   nextTick(scrollBottom)
+
+  try {
+    // 💡 2. 명세서대로 message와 history를 같이 묶어서 보냅니다.
+    const payload = {
+      message: text,
+      history: historyData
+    }
+
+    const response = await fetch(API.CHAT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload) 
+    })
+
+    if (!response.ok) throw new Error('서버 응답 오류')
+
+    const data = await response.json()
+    
+    // 💡 3. 키보드 F12(개발자 도구) 콘솔창에 백엔드 응답을 찍어봅니다! (가장 중요)
+    console.log("🤖 백엔드가 보낸 원본 데이터:", data)
+
+    // 백엔드가 어떤 이름표로 답을 줄지 몰라서 가장 많이 쓰는 이름표들을 다 넣어두었습니다.
+    const botReply = data.answer || data.message || data.reply || data.response || data.content || '답변을 불러오지 못했습니다.'
+
+    messages.value.push({
+      id: `${id}-r`,
+      from: 'bot',
+      text: botReply
+    })
+    
+  } catch (error) {
+    console.error('챗봇 통신 실패:', error)
+    messages.value.push({
+      id: `${id}-e`,
+      from: 'bot',
+      text: '죄송합니다. 서버와 연결할 수 없습니다.'
+    })
+  } finally {
+    nextTick(scrollBottom)
+  }
 }
 
 function scrollBottom() {

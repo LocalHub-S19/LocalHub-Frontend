@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { API } from '@/api.js'
 
 const router = useRouter()
 const BOARD_KEY = 'localhub_boards'
@@ -42,37 +43,17 @@ function formatRelativeTime(dateString) {
   return `${String(targetDate.getMonth() + 1).padStart(2, '0')}.${String(targetDate.getDate()).padStart(2, '0')}`
 }
 
-function loadRecent() {
-  const raw = localStorage.getItem(BOARD_KEY)
-  if (!raw) {
-    const now = new Date()
-    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 18, 30, 0)
+async function loadRecent() {
+  try {
+    const response = await fetch(API.POSTS)
+    const data = await response.json()
     
-    const seed = [
-      {
-        post_id: "1",
-        category: "자유",
-        title: "동대문 야시장 먹거리 투어 다녀왔어요!",
-        content: "주말이라 그런지 사람이 정말 많았는데 꼬치가 맛있었습니다.",
-        created_at: yesterday.toISOString(),
-        views: 124
-      },
-      {
-        post_id: "2",
-        category: "관광",
-        title: "한강 피크닉 명당 자리 추천해 드립니다 🌳",
-        content: "여의도보다는 뚝섬 유원지 인근 언덕이 노을 보기에 한적하고 좋아요.",
-        created_at: now.toISOString(),
-        views: 89
-      }
-    ]
-    localStorage.setItem(BOARD_KEY, JSON.stringify(seed))
-    recent.value = seed.slice(-6).reverse()
-    return
+    // 💡 data.items 에 실제 게시글 배열이 들어있습니다.
+    const posts = data.items || [] 
+    recent.value = posts.slice(0, 6) 
+  } catch (error) {
+    console.error('최근 게시글 불러오기 실패:', error)
   }
-  
-  const arr = JSON.parse(raw)
-  recent.value = arr.slice(-6).reverse()
 }
 
 onMounted(loadRecent)
@@ -135,7 +116,7 @@ function openCategory(categoryId) {
       </div>
       
       <ul class="recent-list">
-        <li v-for="p in recent" :key="p.post_id" class="recent-row" @click="openDetail(p.post_id)">
+        <li v-for="p in recent" :key="p.id" class="recent-row" @click="openDetail(p.id)">
           <div class="line">
             <div class="line-left">
               <span 

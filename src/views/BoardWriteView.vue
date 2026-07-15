@@ -1,19 +1,19 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { API } from '@/api.js'
 
-const BOARD_KEY = 'localhub_boards'
 const router = useRouter()
 const route = useRoute()
 const editingId = route.params.id || null
 
-const category = ref('자유') // 💡 기본값을 '자유'로 세팅
+const category = ref('자유')
 const title = ref('')
 const content = ref('')
 const pw = ref('')       
 const error = ref('')
+const tagInput = ref('') // 💡 태그 입력용 변수
 
-// 💡 아이콘을 제외하고 완전히 2글자로 맞춘 탭 배열
 const categoryOptions = [
   { value: '자유', label: '자유' },
   { value: '관광', label: '관광' },
@@ -22,52 +22,63 @@ const categoryOptions = [
   { value: '쇼핑', label: '쇼핑' }
 ]
 
-function loadForEdit() {
-  if (!editingId) return
-  const raw = localStorage.getItem(BOARD_KEY)
-  if (!raw) return
-  const arr = JSON.parse(raw)
-  
-  const item = arr.find(x => String(x.post_id) === String(editingId))
-  if (item) {
-    category.value = item.category || '자유'
-    title.value = item.title
-    content.value = item.content
+async function loadForEdit() {
+  if (!editingId) return 
+  try {
+    const response = await fetch(API.POST_DETAIL(editingId))
+    if (!response.ok) return
+    const data = await response.json()
+    
+    category.value = data.category || '자유'
+    title.value = data.title || ''
+    content.value = data.content || ''
+    // 💡 기존 태그가 있으면 #태그 형태로 묶어서 인풋에 보여주기
+    tagInput.value = data.tags ? data.tags.map(t => `#${t}`).join(' ') : ''
+  } catch (err) {
+    console.error('수정할 글 불러오기 실패:', err)
   }
 }
 
-function save() {
+async function save() {
   error.value = ''
-  const now = new Date()
-  const createdAt = `${String(now.getMonth()+1).padStart(2,'0')}.${String(now.getDate()).padStart(2,'0')}`
-  const raw = localStorage.getItem(BOARD_KEY)
-  const arr = raw ? JSON.parse(raw) : []
+  if (!pw.value || pw.value.trim() === '') { 
+    error.value = '비밀번호를 입력하세요.'; return 
+  }
 
-  if (editingId) {
-    const idx = arr.findIndex(x => String(x.post_id) === String(editingId))
-    if (idx < 0) { error.value = '게시글을 찾을 수 없습니다.'; return }
-    if ((arr[idx].password || '') !== pw.value) { error.value = '비밀번호가 일치하지 않습니다.'; return }
-    
-    arr[idx].category = category.value
-    arr[idx].title = title.value
-    arr[idx].content = content.value
-    
-    localStorage.setItem(BOARD_KEY, JSON.stringify(arr))
-    router.push(`/board/${editingId}`)
-  } else {
-    if (!pw.value || pw.value.trim() === '') { error.value = '수정용 비밀번호를 입력하세요.'; return }
-    
-    const newId = String(Date.now())
-    arr.push({
-      post_id: newId,
-      category: category.value,
-      title: title.value,
-      content: content.value,
-      created_at: createdAt,
-      password: pw.value
-    })
-    localStorage.setItem(BOARD_KEY, JSON.stringify(arr))
-    router.push(`/board/${newId}`)
+  // 💡 #으로 시작하는 단어들을 배열로 추출
+  const tagRegex = /#(\S+)/g
+  const tags = [...tagInput.value.matchAll(tagRegex)].map(m => m[1])
+
+  const payload = {
+    category: category.value,
+    title: title.value,
+    content: content.value,
+    password: pw.value,
+    tags: tags // 💡 배열 형태로 백엔드 전송
+  }
+
+  try {
+    if (editingId) {
+      const response = await fetch(API.POST_DETAIL(editingId), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!response.ok) throw new Error('수정 실패')
+      router.push(`/board/${editingId}`)
+      
+    } else {
+      const response = await fetch(API.POSTS, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!response.ok) throw new Error('등록 실패')
+      const newPost = await response.json()
+      router.push(`/board/${newPost.id || newPost.id}`) 
+    }
+  } catch (err) {
+    error.value = '저장에 실패했습니다. 서버 상태나 비밀번호를 확인해주세요.'
   }
 }
 
@@ -81,7 +92,6 @@ onMounted(loadForEdit)
 
 <template>
   <div class="write-page">
-    <!-- Breadcrumb -->
     <div class="breadcrumb">
       <span class="home-icon">🏠</span> 홈 <span class="arrow">&gt;</span> <span>커뮤니티 광장</span> <span class="arrow">&gt;</span> <span class="current">{{ editingId ? '게시글 수정' : '게시글 작성' }}</span>
     </div>
@@ -92,7 +102,6 @@ onMounted(loadForEdit)
     </div>
 
     <div class="form-card">
-      <!-- 💡 드롭다운 대신 들어간 아이콘 없는 2글자 균등 배열 탭 영역 -->
       <div class="form-group">
         <label class="label">카테고리 선택</label>
         <div class="category-pill-group">
@@ -114,6 +123,11 @@ onMounted(loadForEdit)
       </div>
 
       <div class="form-group">
+        <label class="label">해시태그 (선택)</label>
+        <input v-model="tagInput" class="input" placeholder="#남산 #야경 #데이트 (띄어쓰기로 구분해주세요)" />
+      </div>
+
+      <div class="form-group">
         <label class="label">상세 본문 내용</label>
         <textarea v-model="content" class="input content-input" rows="12" placeholder="전달하고자 하는 정보를 상세하게 기입해 주세요."></textarea>
       </div>
@@ -129,7 +143,6 @@ onMounted(loadForEdit)
         </div>
       </div>
 
-      <!-- 에러 메세지 -->
       <div class="err-box" v-if="error">
         <span class="err-icon">🚨</span>
         <span class="err-text">{{ error }}</span>
@@ -160,7 +173,6 @@ onMounted(loadForEdit)
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Breadcrumb */
 .breadcrumb {
   color: #94a3b8;
   font-size: 13px;
@@ -173,24 +185,10 @@ onMounted(loadForEdit)
 .breadcrumb .arrow { color: #cbd5e1; font-weight: bold; }
 .breadcrumb .current { color: #475569; font-weight: 600; }
 
-/* Page Header */
-.page-header {
-  margin-bottom: 24px;
-}
-.page-title {
-  margin: 0 0 6px 0;
-  font-size: 24px;
-  font-weight: 800;
-  color: var(--text-main);
-  letter-spacing: -0.5px;
-}
-.page-desc {
-  margin: 0;
-  color: var(--text-sub);
-  font-size: 14px;
-}
+.page-header { margin-bottom: 24px; }
+.page-title { margin: 0 0 6px 0; font-size: 24px; font-weight: 800; color: var(--text-main); letter-spacing: -0.5px; }
+.page-desc { margin: 0; color: var(--text-sub); font-size: 14px; }
 
-/* Form Card */
 .form-card {
   background: var(--bg-card);
   padding: 32px;
@@ -201,37 +199,14 @@ onMounted(loadForEdit)
   gap: 24px;
 }
 
-/* Form Group */
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+.form-group { display: flex; flex-direction: column; gap: 8px; }
+.label { font-weight: 700; color: var(--text-main); font-size: 14px; }
+.label-with-desc { display: flex; flex-direction: column; gap: 4px; }
+.label-desc { font-size: 12px; color: var(--text-sub); }
 
-/* Labels & inputs */
-.label {
-  font-weight: 700;
-  color: var(--text-main);
-  font-size: 14px;
-}
-.label-with-desc {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.label-desc {
-  font-size: 12px;
-  color: var(--text-sub);
-}
-
-/* 💡 작성하기 화면 전용 수평형 카테고리 탭 (완벽 균등 분배 구조) */
-.category-pill-group {
-  display: flex;
-  gap: 8px;
-  width: 100%;
-}
+.category-pill-group { display: flex; gap: 8px; width: 100%; }
 .pill-btn {
-  flex: 1; /* 💡 1/N 균등 너비 조절 */
+  flex: 1;
   text-align: center;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -243,16 +218,8 @@ onMounted(loadForEdit)
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.pill-btn:hover {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-}
-.pill-btn.active {
-  background: #eff6ff;
-  color: var(--primary-color);
-  border-color: #bfdbfe;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
-}
+.pill-btn:hover { background: #f1f5f9; border-color: #cbd5e1; }
+.pill-btn.active { background: #eff6ff; color: var(--primary-color); border-color: #bfdbfe; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08); }
 
 .input {
   width: 100%;
@@ -265,43 +232,16 @@ onMounted(loadForEdit)
   background: #fff;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.input:focus {
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-}
+.input:focus { border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
 
-.title-input {
-  font-weight: 600;
-  color: var(--text-main);
-}
+.title-input { font-weight: 600; color: var(--text-main); }
+.content-input { min-height: 280px; resize: vertical; line-height: 1.6; }
 
-.content-input {
-  min-height: 280px;
-  resize: vertical;
-  line-height: 1.6;
-}
+.pw-group { border-top: 1px solid #f1f5f9; padding-top: 18px; }
+.pw-input-wrapper { position: relative; display: flex; align-items: center; }
+.lock-icon { position: absolute; left: 14px; font-size: 13px; color: #94a3b8; }
+.pw-input { padding-left: 38px !important; }
 
-/* Password Group Wrapper */
-.pw-group {
-  border-top: 1px solid #f1f5f9;
-  padding-top: 18px;
-}
-.pw-input-wrapper {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-.lock-icon {
-  position: absolute;
-  left: 14px;
-  font-size: 13px;
-  color: #94a3b8;
-}
-.pw-input {
-  padding-left: 38px !important;
-}
-
-/* Error Box */
 .err-box {
   display: flex;
   align-items: center;
@@ -312,13 +252,8 @@ onMounted(loadForEdit)
   border-radius: 10px;
 }
 .err-icon { font-size: 16px; }
-.err-text {
-  color: #ef4444;
-  font-size: 13px;
-  font-weight: 600;
-}
+.err-text { color: #ef4444; font-size: 13px; font-weight: 600; }
 
-/* Actions */
 .form-actions {
   display: flex;
   justify-content: flex-end;
@@ -327,8 +262,6 @@ onMounted(loadForEdit)
   border-top: 1px solid #f1f5f9;
   padding-top: 20px;
 }
-
-/* Buttons */
 .btn {
   padding: 12px 24px;
   border-radius: 10px;
@@ -339,38 +272,15 @@ onMounted(loadForEdit)
   border: 1px solid transparent;
   transition: all 0.15s ease;
 }
+.btn.cancel { background: #f1f5f9; color: #475569; }
+.btn.cancel:hover { background: #e2e8f0; }
+.btn.submit { background: var(--primary-color); color: white; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15); }
+.btn.submit:hover { background: var(--primary-hover); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(37, 99, 235, 0.25); }
 
-.btn.cancel {
-  background: #f1f5f9;
-  color: #475569;
-}
-.btn.cancel:hover {
-  background: #e2e8f0;
-}
-
-.btn.submit {
-  background: var(--primary-color);
-  color: white;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
-}
-.btn.submit:hover {
-  background: var(--primary-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.25);
-}
-
-/* Responsive */
 @media (max-width: 640px) {
   .form-card { padding: 20px 16px; }
-  .category-pill-group { 
-    display: grid;
-    grid-template-columns: repeat(3, 1fr); /* 모바일에서는 3열/2열 격자 배치로 공간 압축 */
-    gap: 6px; 
-  }
-  .pill-btn {
-    padding: 10px 0;
-    font-size: 12px;
-  }
+  .category-pill-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .pill-btn { padding: 10px 0; font-size: 12px; }
   .form-actions { flex-direction: column-reverse; align-items: stretch; gap: 10px; }
   .btn { width: 100%; }
 }
