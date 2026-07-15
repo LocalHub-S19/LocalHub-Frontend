@@ -1,8 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-// 💡 API와 번역 사전을 함께 불러옵니다.
-import { API, catToFront } from '@/api.js'
+import { API, catToFront, catToBack } from '@/api.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -11,12 +10,13 @@ const all = ref([])
 const selectedCategory = ref('전체')
 const searchQuery = ref('')
 const searchInput = ref('')
+
 const page = ref(1)
-const perPage = 20
+// 💡 1. 전체 페이지 수를 프론트엔드가 계산하지 않고, 서버가 주는 값을 담을 수 있게 변경
+const totalPages = ref(1) 
 
 const categories = ['전체', '자유', '관광', '여행', '숙박', '맛집', '쇼핑', '문화', '행사', '레포츠']
 
-// 💡 날짜를 예쁘게 만들어주는 함수 (이게 빠져서 화면이 날아갔었습니다!)
 function formatRelativeTime(dateString) {
   if (!dateString) return ''
   const d = new Date(dateString)
@@ -31,35 +31,33 @@ function formatRelativeTime(dateString) {
 
 async function load() {
   try {
-    const response = await fetch(API.POSTS)
-    const data = await response.json()
-    const posts = Array.isArray(data) ? data : (data.items || [])
+    // 💡 1. 현재 선택된 카테고리를 서버용 이름으로 변환 (전체는 빈 문자열로 처리)
+    const categoryQuery = selectedCategory.value === '전체' 
+      ? '' 
+      : `&category=${catToBack[selectedCategory.value] || selectedCategory.value}`
 
-    // 💡 1. 카테고리 번역
-    const mappedPosts = posts.map(post => ({
+    // 💡 2. URL에 page와 category를 둘 다 합쳐서 요청
+    const url = `${API.POSTS}?page=${page.value}${categoryQuery}`
+    const response = await fetch(url)
+    const data = await response.json()
+
+    // 💡 3. 서버가 주는 전체 페이지 수 업데이트
+    totalPages.value = data.total_pages || 1
+    
+    // 💡 4. 데이터 저장 (백엔드 구조에 맞춰 items 사용)
+    const posts = data.items || []
+
+    all.value = posts.map(post => ({
       ...post,
       category: catToFront[post.category] || post.category || '자유'
-    }))
-
-    // 💡 2. 최신 글이 맨 위로 오도록 고유 ID 기준 내림차순 정렬
-    all.value = mappedPosts.sort((a, b) => {
-      const idA = a.id || a.post_id || 0
-      const idB = b.id || b.post_id || 0
-      return idB - idA
-    })
+    })).sort((a, b) => (b.id || 0) - (a.id || 0))
     
   } catch (error) {
     console.error('글 목록 불러오기 실패:', error)
   }
-
-  // 홈에서 카테고리 클릭해서 넘어왔을 때 탭 연동
-  const queryCategory = route.query.category
-  if (queryCategory && categories.includes(queryCategory)) {
-    selectedCategory.value = queryCategory
-  }
 }
 
-// 검색 및 카테고리 필터링
+// 화면 필터링 기능 (카테고리 및 검색)
 const filtered = computed(() => {
   return all.value.filter(b => {
     const matchCat = selectedCategory.value === '전체' || b.category === selectedCategory.value
@@ -71,13 +69,9 @@ const filtered = computed(() => {
   })
 })
 
+// 💡 4. 이미 서버가 20개씩 잘라서 주므로, 프론트에서 또 자를(slice) 필요 없이 그대로 노출!
 const pageItems = computed(() => {
-  const start = (page.value - 1) * perPage
-  return filtered.value.slice(start, start + perPage)
-})
-
-const totalPages = computed(() => {
-  return Math.ceil(filtered.value.length / perPage) || 1
+  return filtered.value
 })
 
 function doSearch() {
@@ -87,7 +81,8 @@ function doSearch() {
 
 function setCategory(c) {
   selectedCategory.value = c
-  page.value = 1
+  page.value = 1 // 카테고리가 바뀌면 무조건 1페이지로!
+  load()         // 새로 불러오기!
   router.push({ query: { ...route.query, category: c === '전체' ? undefined : c } })
 }
 
@@ -101,14 +96,22 @@ function goWrite() {
 
 onMounted(load)
 
-// 라우터 주소가 바뀌면 카테고리 탭도 같이 바뀌도록 감시
 watch(() => route.query.category, (newCat) => {
-  if (newCat && categories.includes(newCat)) {
-    selectedCategory.value = newCat
-  } else if (!newCat) {
-    selectedCategory.value = '전체'
+  if (newCat) {
+    selectedCategory.value = newCat; // URL 파라미터가 바뀌면 카테고리 변경
+    page.value = 1;                  // 페이지도 1페이지로 리셋
+    load();                          // 바뀐 카테고리로 서버에서 데이터 새로 호출!
+  } else {
+    selectedCategory.value = '전체';
+    page.value = 1;
+    load();
   }
-  page.value = 1
+}, { immediate: true });
+
+// 💡 5. 사용자가 2번, 3번 페이지 버튼을 누를 때마다 서버에서 새 데이터를 불러오도록 감시
+watch(page, () => {
+  load()
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 })
 </script>
 
@@ -148,9 +151,6 @@ watch(() => route.query.category, (newCat) => {
         </div>
         <button class="search-btn" @click="doSearch">검색</button>
       </div>
-      <button class="write-btn" @click="goWrite">
-        <span class="plus-icon">+</span> 새 글 쓰기
-      </button>
     </div>
 
     <div class="table-wrap">
@@ -198,7 +198,7 @@ watch(() => route.query.category, (newCat) => {
       </div>
     </div>
 
-    <div class="pagination" v-if="totalPages > 1">
+    <div class="pagination" v-if="totalPages > 0">
       <button class="page-btn" :disabled="page === 1" @click="page--">‹ 이전</button>
       <div class="page-nums">
         <button 
@@ -248,9 +248,6 @@ watch(() => route.query.category, (newCat) => {
 .search-input-wrapper input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
 .search-btn { background: #0f172a; color: #fff; border: none; padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background-color 0.15s ease; white-space: nowrap; }
 .search-btn:hover { background: #1e293b; }
-.write-btn { background: #2563eb; color: #fff; border: none; padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15); transition: all 0.2s ease; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.write-btn:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 6px 16px rgba(37, 99, 235, 0.25); }
-.plus-icon { font-size: 16px; font-weight: bold; }
 
 /* 💡 테이블을 감싸는 박스와 고정 레이아웃 */
 .table-wrap { 
@@ -317,7 +314,6 @@ watch(() => route.query.category, (newCat) => {
 @media (max-width: 640px) {
   .list-controls { flex-direction: column-reverse; align-items: stretch; }
   .search-area { max-width: 100%; }
-  .write-btn { justify-content: center; }
   .col-num, .col-views, .num, .views { display: none; }
   .col-date { width: 80px; }
   .badge-cat { display: none; }

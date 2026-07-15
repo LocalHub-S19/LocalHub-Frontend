@@ -80,7 +80,7 @@ function goWrite() { router.push('/board/write') }
 function openDetail(postId) { router.push(`/board/${postId}`) }
 
 function openCategory(categoryId) { 
-  router.push(`/board?category=${categoryId}`) 
+  router.push({ path: '/board', query: { category: categoryId } }) 
 }
 </script>
 
