@@ -1,10 +1,10 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { API } from '@/api.js'
+// 💡 번역 사전(catToFront) 임포트 추가
+import { API, catToFront } from '@/api.js'
 
 const router = useRouter()
-const BOARD_KEY = 'localhub_boards'
 const recent = ref([])
 
 // 시간 포맷터 함수
@@ -48,9 +48,13 @@ async function loadRecent() {
     const response = await fetch(API.POSTS)
     const data = await response.json()
     
-    // 💡 data.items 에 실제 게시글 배열이 들어있습니다.
-    const posts = data.items || [] 
-    recent.value = posts.slice(0, 6) 
+    const posts = Array.isArray(data) ? data : (data.items || []) 
+    
+    // 💡 백엔드 데이터를 가져와서 카테고리를 프론트 화면용으로 번역 처리
+    recent.value = posts.slice(0, 6).map(post => ({
+      ...post,
+      category: catToFront[post.category] || post.category || '자유'
+    }))
   } catch (error) {
     console.error('최근 게시글 불러오기 실패:', error)
   }
@@ -58,19 +62,23 @@ async function loadRecent() {
 
 onMounted(loadRecent)
 
+// 💡 9가지 카테고리로 완벽 반영 (정사각형에 잘 어울리도록 조율)
 const categories = [
   { id: '자유', name: '자유', emoji: '💬', bg: 'linear-gradient(135deg, #f1f5f9 0%, #cbd5e1 100%)' },
   { id: '관광', name: '관광', emoji: '🗺️', bg: 'linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%)' },
-  { id: '행사', name: '행사', emoji: '🎉', bg: 'linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%)' },
+  { id: '여행', name: '여행', emoji: '🎒', bg: 'linear-gradient(135deg, #ecfdf5 0%, #a7f3d0 100%)' },
+  { id: '숙박', name: '숙박', emoji: '🏨', bg: 'linear-gradient(135deg, #f0fdf4 0%, #bbf7d0 100%)' },
+  { id: '맛집', name: '맛집', emoji: '🍕', bg: 'linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)' },
+  { id: '쇼핑', name: '쇼핑', emoji: '🛍️', bg: 'linear-gradient(135deg, #fee2e2 0%, #fca5a5 100%)' },
   { id: '문화', name: '문화', emoji: '🎨', bg: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)' },
-  { id: '쇼핑', name: '쇼핑', emoji: '🛍️', bg: 'linear-gradient(135deg, #fee2e2 0%, #fca5a5 100%)' }
+  { id: '행사', name: '행사', emoji: '🎉', bg: 'linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%)' },
+  { id: '레포츠', name: '레포츠', emoji: '🚴', bg: 'linear-gradient(135deg, #eff6ff 0%, #bfdbfe 100%)' }
 ]
 
 function goBoard() { router.push('/board') }
 function goWrite() { router.push('/board/write') }
 function openDetail(postId) { router.push(`/board/${postId}`) }
 
-// 💡 2글자 명칭 그대로 쿼리 스트링 파라미터로 넘겨 연동합니다.
 function openCategory(categoryId) { 
   router.push(`/board?category=${categoryId}`) 
 }
@@ -78,15 +86,6 @@ function openCategory(categoryId) {
 
 <template>
   <div class="home-page">
-    <header class="home-header">
-      <div class="logo-area">
-        <span class="logo-emoji">🏡</span>
-        <span class="logo-text">LocalHub</span>
-      </div>
-      <button class="write-btn" @click="goWrite">
-        <span class="plus-icon">+</span> 새 글 쓰기
-      </button>
-    </header>
 
     <div class="hero-banner">
       <div class="hero-inner">
@@ -98,9 +97,11 @@ function openCategory(categoryId) {
 
     <section class="categories">
       <h3 class="section-label">어떤 정보를 찾으시나요?</h3>
-      <div class="cat-row">
+      <div class="cat-grid">
         <div v-for="c in categories" :key="c.id" class="cat-card" @click="openCategory(c.id)">
-          <div class="thumb" :style="{ background: c.bg }"><span class="cat-emoji">{{ c.emoji }}</span></div>
+          <div class="thumb" :style="{ background: c.bg }">
+            <span class="cat-emoji">{{ c.emoji }}</span>
+          </div>
           <div class="cat-name">{{ c.name }}</div>
         </div>
       </div>
@@ -124,9 +125,13 @@ function openCategory(categoryId) {
                 :class="{
                   'cat-free': !p.category || p.category === '자유',
                   'cat-tour': p.category === '관광', 
-                  'cat-event': p.category === '행사',
+                  'cat-trip': p.category === '여행',
+                  'cat-stay': p.category === '숙박',
+                  'cat-food': p.category === '맛집',
+                  'cat-shopping': p.category === '쇼핑',
                   'cat-culture': p.category === '문화',
-                  'cat-shopping': p.category === '쇼핑'
+                  'cat-event': p.category === '행사',
+                  'cat-sports': p.category === '레포츠'
                 }"
               >
                 {{ p.category || '자유' }}
@@ -150,28 +155,49 @@ function openCategory(categoryId) {
 </template>
 
 <style scoped>
-.home-page { max-width: 1000px; margin: 0 auto; padding: 16px 16px 40px; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-.home-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 0 20px 0; border-bottom: 1px solid #f1f5f9; margin-bottom: 24px; }
-.logo-area { display: flex; align-items: center; gap: 8px; }
-.logo-emoji { font-size: 22px; }
-.logo-text { font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.3px; }
-.write-btn { background: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(37, 99, 235, 0.15); transition: all 0.2s ease; display: flex; align-items: center; gap: 5px; }
-.write-btn:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 6px 14px rgba(37, 99, 235, 0.25); }
-.plus-icon { font-size: 14px; font-weight: bold; }
 .hero-banner { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border-radius: 16px; padding: 40px 24px; margin-bottom: 32px; display: flex; justify-content: center; align-items: center; border: 1px solid #dbeafe; }
 .hero-inner { max-width: 600px; text-align: center; }
 .hero-tag { display: inline-block; background: #2563eb; color: white; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 4px 10px; border-radius: 20px; margin-bottom: 12px; letter-spacing: 0.5px; }
 .hero-title { color: #1e3a8a; font-weight: 800; margin: 0 0 10px; font-size: 24px; letter-spacing: -0.5px; }
 .hero-title span { color: #2563eb; }
 .hero-sub { margin: 0; color: #4b5563; font-size: 14px; line-height: 1.5; }
+
 .categories { margin-bottom: 32px; }
-.section-label { margin: 0 0 12px 0; color: #111827; font-weight: 700; font-size: 16px; letter-spacing: -0.3px; }
-.cat-row { display: flex; gap: 12px; align-items: stretch; }
-.cat-card { flex: 1; background: #fff; border: 1px solid #f1f5f9; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; align-items: center; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.01); transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+.section-label { margin: 0 0 16px 0; color: #111827; font-weight: 700; font-size: 16px; letter-spacing: -0.3px; }
+
+/* 💡 카테고리 9개를 예쁘게 나열하기 위한 그리드 레이아웃 */
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 12px;
+}
+.cat-card {
+  background: #fff;
+  border: 1px solid #f1f5f9;
+  border-radius: 14px;
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
 .cat-card:hover { transform: translateY(-4px); box-shadow: 0 12px 20px -8px rgba(0, 0, 0, 0.1); border-color: #cbd5e1; }
-.thumb { width: 100%; height: 80px; display: flex; align-items: center; justify-content: center; border-radius: 10px; margin-bottom: 8px; }
-.cat-emoji { font-size: 28px; }
-.cat-name { color: #374151; font-weight: 700; font-size: 13px; }
+
+/* 💡 정사각형 이미지 썸네일 설정 */
+.thumb {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+.cat-emoji { font-size: 24px; }
+.cat-name { color: #374151; font-weight: 700; font-size: 13px; text-align: center; }
+
 .recent { margin-top: 24px; }
 .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .header-left { display: flex; align-items: center; gap: 8px; }
@@ -179,6 +205,7 @@ function openCategory(categoryId) {
 @keyframes pulse { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
 .view-all-btn { background: none; border: none; color: #2563eb; font-size: 13px; font-weight: 700; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background-color 0.15s ease; }
 .view-all-btn:hover { background-color: #eff6ff; }
+
 .recent-list { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05); }
 .recent-row { padding: 16px 20px; display: flex; align-items: center; border-bottom: 1px solid #f1f5f9; cursor: pointer; transition: background-color 0.15s ease; }
 .recent-row:last-child { border-bottom: none; }
@@ -186,12 +213,17 @@ function openCategory(categoryId) {
 .line { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; }
 .line-left { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
 
-.post-category { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; white-space: nowrap; background: #f1f5f9; color: #475569; }
+/* 💡 각 카테고리별 테마 컬러 설정 */
+.post-category { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
 .post-category.cat-free { background: #f1f5f9; color: #475569; }
 .post-category.cat-tour { background: #e0f2fe; color: #0369a1; }
-.post-category.cat-event { background: #f3e8ff; color: #6b21a8; }
-.post-category.cat-culture { background: #fef3c7; color: #b45309; }
+.post-category.cat-trip { background: #ecfdf5; color: #047857; }
+.post-category.cat-stay { background: #f0fdf4; color: #15803d; }
+.post-category.cat-food { background: #fff7ed; color: #c2410c; }
 .post-category.cat-shopping { background: #fee2e2; color: #b91c1c; }
+.post-category.cat-culture { background: #fef3c7; color: #b45309; }
+.post-category.cat-event { background: #f3e8ff; color: #6b21a8; }
+.post-category.cat-sports { background: #eff6ff; color: #1d4ed8; }
 
 .skeleton-title { color: #1e293b; font-size: 14px; font-weight: 500; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .recent-row:hover .skeleton-title { color: #2563eb; }
@@ -201,13 +233,17 @@ function openCategory(categoryId) {
 .empty-icon { font-size: 28px; }
 .empty-state p { margin: 0; color: #94a3b8; font-size: 14px; }
 
+/* 반응형 레이아웃 대응 */
+@media (max-width: 840px) {
+  .cat-grid { grid-template-columns: repeat(5, 1fr); }
+}
 @media (max-width: 640px) {
   .hero-banner { padding: 24px 16px; margin-bottom: 24px; }
   .hero-title { font-size: 19px; }
-  .cat-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .cat-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .cat-card { padding: 10px; }
-  .thumb { height: 60px; margin-bottom: 4px; }
-  .cat-emoji { font-size: 22px; }
+  .thumb { width: 48px; height: 48px; margin-bottom: 4px; }
+  .cat-emoji { font-size: 20px; }
   .recent-row { padding: 14px 12px; }
   .line-left { gap: 8px; }
   .post-category { display: none; }

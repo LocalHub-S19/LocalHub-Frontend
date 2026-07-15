@@ -1,114 +1,115 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { API } from '@/api.js'
+// 💡 API와 번역 사전을 함께 불러옵니다.
+import { API, catToFront } from '@/api.js'
 
-const BOARD_KEY = 'localhub_boards'
 const router = useRouter()
 const route = useRoute()
 
 const all = ref([])
-const query = ref('')
 const selectedCategory = ref('전체')
+const searchQuery = ref('')
+const searchInput = ref('')
 const page = ref(1)
-const perPage = 7
+const perPage = 20
 
-const categories = ['전체', '자유', '관광', '행사', '문화', '쇼핑']
+const categories = ['전체', '자유', '관광', '여행', '숙박', '맛집', '쇼핑', '문화', '행사', '레포츠']
 
-// 💡 24시간 기준 정밀 시간 표기 포맷터 (쌍점 ':' 기호 적용 버전)
-function formatListDate(dateString) {
-  if (!dateString) return '';
-  
-  let d;
-  if (dateString.includes('-') || dateString.includes('T') || dateString.includes('/')) {
-    d = new Date(dateString.replace(/-/g, '/').replace('T', ' ')); 
-  } else if (dateString.includes('.')) {
-    const parts = dateString.split('.');
-    if (parts.length >= 2) {
-      const now = new Date();
-      d = new Date(
-        now.getFullYear(), 
-        parseInt(parts[0]) - 1, 
-        parseInt(parts[1]), 
-        parts[2] ? parseInt(parts[2]) : 0, 
-        parts[3] ? parseInt(parts[3]) : 0
-      );
-    } else {
-      return dateString;
-    }
-  } else {
-    d = new Date(dateString);
-  }
+// 💡 날짜를 예쁘게 만들어주는 함수 (이게 빠져서 화면이 날아갔었습니다!)
+function formatRelativeTime(dateString) {
+  if (!dateString) return ''
+  const d = new Date(dateString)
+  if (isNaN(d.getTime())) return dateString
 
-  if (isNaN(d.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffHours = diffMs / (1000 * 60 * 60);
-
-  const MM = String(d.getMonth() + 1).padStart(2, '0');
-  const DD = String(d.getDate()).padStart(2, '0');
-  const HH = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-
-  // 💡 24시간 미만인 글: HH:MM 양식
-  if (diffHours < 24) {
-    return `${HH}:${mm}`;
-  }
-  // 💡 24시간이 지난 글: MM.DD HH:MM 양식
-  return `${MM}.${DD} ${HH}:${mm}`;
+  const MM = String(d.getMonth() + 1).padStart(2, '0')
+  const DD = String(d.getDate()).padStart(2, '0')
+  const HH = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${MM}.${DD} ${HH}:${mm}`
 }
 
 async function load() {
   try {
     const response = await fetch(API.POSTS)
     const data = await response.json()
+    const posts = Array.isArray(data) ? data : (data.items || [])
+
+    // 💡 1. 카테고리 번역
+    const mappedPosts = posts.map(post => ({
+      ...post,
+      category: catToFront[post.category] || post.category || '자유'
+    }))
+
+    // 💡 2. 최신 글이 맨 위로 오도록 고유 ID 기준 내림차순 정렬
+    all.value = mappedPosts.sort((a, b) => {
+      const idA = a.id || a.post_id || 0
+      const idB = b.id || b.post_id || 0
+      return idB - idA
+    })
     
-    // 💡 data.items를 넣어주어야 배열로 인식해서 화면에 정상 출력됩니다.
-    all.value = data.items || [] 
   } catch (error) {
     console.error('글 목록 불러오기 실패:', error)
   }
 
-  // 탭 연동 로직
+  // 홈에서 카테고리 클릭해서 넘어왔을 때 탭 연동
   const queryCategory = route.query.category
   if (queryCategory && categories.includes(queryCategory)) {
     selectedCategory.value = queryCategory
   }
 }
 
-onMounted(load)
-
+// 검색 및 카테고리 필터링
 const filtered = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  let list = all.value.slice().reverse()
-
-  if (selectedCategory.value !== '전체') {
-    list = list.filter(item => (item.category || '자유') === selectedCategory.value)
-  }
-
-  if (!q) return list
-  return list.filter(item =>
-    (item.title || '').toLowerCase().includes(q) ||
-    (item.content || '').toLowerCase().includes(q)
-  )
+  return all.value.filter(b => {
+    const matchCat = selectedCategory.value === '전체' || b.category === selectedCategory.value
+    const keyword = searchQuery.value.trim().toLowerCase()
+    const matchSearch = !keyword || 
+      (b.title && b.title.toLowerCase().includes(keyword)) || 
+      (b.content && b.content.toLowerCase().includes(keyword))
+    return matchCat && matchSearch
+  })
 })
 
-const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / perPage)))
 const pageItems = computed(() => {
   const start = (page.value - 1) * perPage
   return filtered.value.slice(start, start + perPage)
 })
 
-function setCategory(cat) { selectedCategory.value = cat; page.value = 1 }
-function doSearch() { page.value = 1 }
-function goWrite() { router.push('/board/write') }
-function openDetail(postId) { router.push(`/board/${postId}`) }
-function goPage(n) {
-  if (n < 1) n = 1
-  if (n > totalPages.value) n = totalPages.value
-  page.value = n
+const totalPages = computed(() => {
+  return Math.ceil(filtered.value.length / perPage) || 1
+})
+
+function doSearch() {
+  searchQuery.value = searchInput.value
+  page.value = 1
 }
+
+function setCategory(c) {
+  selectedCategory.value = c
+  page.value = 1
+  router.push({ query: { ...route.query, category: c === '전체' ? undefined : c } })
+}
+
+function openDetail(id) {
+  router.push(`/board/${id}`)
+}
+
+function goWrite() {
+  router.push('/board/write')
+}
+
+onMounted(load)
+
+// 라우터 주소가 바뀌면 카테고리 탭도 같이 바뀌도록 감시
+watch(() => route.query.category, (newCat) => {
+  if (newCat && categories.includes(newCat)) {
+    selectedCategory.value = newCat
+  } else if (!newCat) {
+    selectedCategory.value = '전체'
+  }
+  page.value = 1
+})
 </script>
 
 <template>
@@ -118,19 +119,19 @@ function goPage(n) {
     </div>
 
     <div class="page-header">
-      <h2 class="page-title">실시간 지역 게시판</h2>
+      <h1 class="page-title">실시간 지역 게시판</h1>
       <p class="page-desc">다양한 사람들과 유용한 소식을 자유롭게 공유해보세요.</p>
     </div>
 
     <div class="category-tabs-container">
       <div class="category-tabs">
         <button 
-          v-for="cat in categories" 
-          :key="cat"
-          :class="['tab-btn', { active: selectedCategory === cat }]"
-          @click="setCategory(cat)"
+          v-for="c in categories" 
+          :key="c"
+          :class="['tab-btn', { active: selectedCategory === c }]"
+          @click="setCategory(c)"
         >
-          {{ cat }}
+          {{ c }}
         </button>
       </div>
     </div>
@@ -139,7 +140,11 @@ function goPage(n) {
       <div class="search-area">
         <div class="search-input-wrapper">
           <span class="search-icon">🔍</span>
-          <input v-model="query" @keyup.enter="doSearch" placeholder="제목이나 내용으로 검색해보세요" />
+          <input 
+            v-model="searchInput" 
+            placeholder="제목이나 내용으로 검색해보세요" 
+            @keyup.enter="doSearch"
+          />
         </div>
         <button class="search-btn" @click="doSearch">검색</button>
       </div>
@@ -149,7 +154,7 @@ function goPage(n) {
     </div>
 
     <div class="table-wrap">
-      <table class="board-table">
+      <table class="board-table" v-if="filtered.length > 0">
         <thead>
           <tr>
             <th class="col-num">번호</th>
@@ -159,64 +164,68 @@ function goPage(n) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(b, idx) in pageItems" :key="b.id" class="row" @click="openDetail(b.id)">
-            <td class="num">{{ (filtered.length - ((page-1)*perPage) ) - idx }}</td>
-            <td class="title">
-              <div class="title-content">
-                <span 
-                  v-if="selectedCategory === '전체'" 
-                  class="badge-cat" 
-                  :class="{
-                    'cat-free': !b.category || b.category === '자유',
-                    'cat-tour': b.category === '관광', 
-                    'cat-event': b.category === '행사',
-                    'cat-culture': b.category === '문화',
-                    'cat-shopping': b.category === '쇼핑'
-                  }"
-                >
-                  {{ b.category || '자유' }}
-                </span>
-                <span class="title-text">{{ b.title }}</span>
-              </div>
+          <tr v-for="b in pageItems" :key="b.id || b.post_id" class="row" @click="openDetail(b.id || b.post_id)">
+            <td class="num">{{ b.id || b.post_id }}</td>
+            <td class="title-content">
+              <span 
+                class="badge-cat" 
+                :class="{
+                  'cat-free': !b.category || b.category === '자유',
+                  'cat-tour': b.category === '관광', 
+                  'cat-trip': b.category === '여행',
+                  'cat-stay': b.category === '숙박',
+                  'cat-food': b.category === '맛집',
+                  'cat-shopping': b.category === '쇼핑',
+                  'cat-culture': b.category === '문화',
+                  'cat-event': b.category === '행사',
+                  'cat-sports': b.category === '레포츠'
+                }"
+              >
+                {{ b.category || '자유' }}
+              </span>
+              <span class="title-text">{{ b.title }}</span>
             </td>
-            <td class="views">{{ b.views || 0 }}</td>
-            <td class="date">{{ formatListDate(b.created_at) }}</td>
-          </tr>
-
-          <tr v-if="pageItems.length === 0">
-            <td colspan="4" class="empty">
-              <div class="empty-state">
-                <span class="empty-icon">📭</span>
-                <p class="empty-text">선택된 카테고리의 글이 존재하지 않습니다.</p>
-                <p class="empty-sub">첫 번째 이야기를 작성해보세요!</p>
-              </div>
-            </td>
+            <td class="views">{{ b.views ?? b.view_count ?? b.hits ?? b.read_count ?? 0 }}</td>
+            <td class="date">{{ formatRelativeTime(b.created_at) }}</td>
           </tr>
         </tbody>
       </table>
+
+      <div class="empty-state" v-else>
+        <div class="empty-icon">📭</div>
+        <p class="empty-text">아직 작성된 게시글이 없어요.</p>
+        <p class="empty-sub">첫 번째 글의 주인공이 되어보세요!</p>
+      </div>
     </div>
 
-    <div class="pagination">
-      <button class="page-btn" :disabled="page<=1" @click="goPage(page-1)">
-        <span>&lsaquo;</span> 이전
-      </button>
+    <div class="pagination" v-if="totalPages > 1">
+      <button class="page-btn" :disabled="page === 1" @click="page--">‹ 이전</button>
       <div class="page-nums">
-        <button
-          v-for="n in totalPages"
-          :key="n"
-          :class="['page-num', { active: page===n }]"
-          @click="goPage(n)"
-        >{{ n }}</button>
+        <button 
+          v-for="p in totalPages" 
+          :key="p"
+          :class="['page-num', { active: page === p }]"
+          @click="page = p"
+        >
+          {{ p }}
+        </button>
       </div>
-      <button class="page-btn" :disabled="page>=totalPages" @click="goPage(page+1)">
-        다음 <span>&rsaquo;</span>
-      </button>
+      <button class="page-btn" :disabled="page === totalPages" @click="page++">다음 ›</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.board-page { max-width: 1000px; margin: 0 auto; padding: 24px 16px; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+/* 💡 1200px 확장 및 비율 고정 코드 */
+.board-page { 
+  width: 100%;       
+  max-width: 1200px;
+  margin: 0 auto; 
+  padding: 24px 16px; 
+  box-sizing: border-box; 
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+}
+
 .breadcrumb { color: #94a3b8; font-size: 13px; margin-bottom: 16px; display: flex; align-items: center; gap: 6px; }
 .home-icon { font-size: 14px; }
 .breadcrumb .arrow { color: #cbd5e1; font-weight: bold; }
@@ -243,38 +252,53 @@ function goPage(n) {
 .write-btn:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 6px 16px rgba(37, 99, 235, 0.25); }
 .plus-icon { font-size: 16px; font-weight: bold; }
 
-.table-wrap { background: #fff; border-radius: 14px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.01), 0 0 0 1px #e2e8f0; overflow: hidden; }
-.board-table { width: 100%; border-collapse: collapse; }
+/* 💡 테이블을 감싸는 박스와 고정 레이아웃 */
+.table-wrap { 
+  width: 100%; 
+  box-sizing: border-box; 
+  background: #fff; 
+  border-radius: 14px; 
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.01), 0 0 0 1px #e2e8f0; 
+  overflow: hidden; 
+}
+
+.board-table { 
+  width: 100%; 
+  border-collapse: collapse; 
+  table-layout: fixed; 
+}
 .board-table thead { background: #f8fafc; }
 
 .board-table th, .board-table td { padding: 16px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .board-table tr:last-child td { border-bottom: none; }
 .board-table thead th { color: #475569; font-weight: 700; font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase; }
 
-/* 💡 컬럼 가로 너비 최소 최적화 세팅 */
-.col-num { width: 60px; text-align: center !important; }
+.col-num { width: 80px; text-align: center !important; }
 .col-title { width: auto; text-align: left !important; }
-.col-views { width: 70px; text-align: center !important; }
-.col-date { width: 130px; text-align: center !important; } /* 날짜 자수 증가에 맞춰 가독 범위 가변 조절 */
+.col-views { width: 100px; text-align: center !important; }
+.col-date { width: 150px; text-align: center !important; }
 
 .row { cursor: pointer; transition: background-color 0.15s ease; }
 .row:hover { background: #f8fafc; }
 
-/* 💡 데이터 행(Row) 셀 중앙 정렬 속성 마감 */
 .num { color: #64748b; font-size: 13px; font-weight: 500; text-align: center; }
 .views { color: #64748b; font-size: 13px; text-align: center; }
 .date { color: #94a3b8; font-size: 13px; text-align: center; } 
 
-.title-content { display: flex; align-items: center; gap: 10px; max-width: 100%; text-align: left; }
-.title-text { color: #0f172a; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title-content { display: flex; align-items: center; gap: 10px; max-width: 100%; text-align: left; overflow: hidden; }
+.title-text { color: #0f172a; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .row:hover .title-text { color: #2563eb; }
 
-.badge-cat { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; white-space: nowrap; background: #f1f5f9; color: #475569; }
+.badge-cat { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; white-space: nowrap; background: #f1f5f9; color: #475569; flex-shrink: 0; }
 .badge-cat.cat-free { background: #f1f5f9; color: #475569; }
 .badge-cat.cat-tour { background: #e0f2fe; color: #0369a1; }
-.badge-cat.cat-event { background: #f3e8ff; color: #6b21a8; }
-.badge-cat.cat-culture { background: #fef3c7; color: #b45309; }
+.badge-cat.cat-trip { background: #ecfdf5; color: #047857; }
+.badge-cat.cat-stay { background: #f0fdf4; color: #15803d; }
+.badge-cat.cat-food { background: #fff7ed; color: #c2410c; }
 .badge-cat.cat-shopping { background: #fee2e2; color: #b91c1c; }
+.badge-cat.cat-culture { background: #fef3c7; color: #b45309; }
+.badge-cat.cat-event { background: #f3e8ff; color: #6b21a8; }
+.badge-cat.cat-sports { background: #eff6ff; color: #1d4ed8; }
 
 .empty-state { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 48px 0; text-align: center; }
 .empty-icon { font-size: 32px; margin-bottom: 8px; }

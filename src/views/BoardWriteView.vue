@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { API } from '@/api.js'
+import { API, catToFront, catToBack } from '@/api.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -17,9 +17,13 @@ const tagInput = ref('') // 💡 태그 입력용 변수
 const categoryOptions = [
   { value: '자유', label: '자유' },
   { value: '관광', label: '관광' },
-  { value: '행사', label: '행사' },
+  { value: '여행', label: '여행' },
+  { value: '숙박', label: '숙박' },
+  { value: '맛집', label: '맛집' },
+  { value: '쇼핑', label: '쇼핑' },
   { value: '문화', label: '문화' },
-  { value: '쇼핑', label: '쇼핑' }
+  { value: '행사', label: '행사' },
+  { value: '레포츠', label: '레포츠' }
 ]
 
 async function loadForEdit() {
@@ -29,7 +33,7 @@ async function loadForEdit() {
     if (!response.ok) return
     const data = await response.json()
     
-    category.value = data.category || '자유'
+    category.value = catToFront[data.category] || '자유'
     title.value = data.title || ''
     content.value = data.content || ''
     // 💡 기존 태그가 있으면 #태그 형태로 묶어서 인풋에 보여주기
@@ -50,11 +54,11 @@ async function save() {
   const tags = [...tagInput.value.matchAll(tagRegex)].map(m => m[1])
 
   const payload = {
-    category: category.value,
+    category: catToBack[category.value] || '자유', 
     title: title.value,
     content: content.value,
     password: pw.value,
-    tags: tags // 💡 배열 형태로 백엔드 전송
+    tags: tags
   }
 
   try {

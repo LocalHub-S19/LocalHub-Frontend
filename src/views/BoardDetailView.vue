@@ -1,7 +1,8 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { API } from '@/api.js'
+// 💡 앞서 만들었던 번역 사전(catToFront)도 꼭 같이 임포트해야 합니다!
+import { API, catToFront } from '@/api.js' 
 
 const route = useRoute()
 const router = useRouter()
@@ -16,17 +17,59 @@ const error = ref('')
 
 const recentPosts = ref([])
 
+// 💡 1. 날짜를 예쁘게 만들어주는 함수 (T나 Z가 붙은 못생긴 DB 날짜를 07.15 10:18 로 변환)
+function formatDetailDate(dateString) {
+  if (!dateString) return ''
+  const d = new Date(dateString)
+  if (isNaN(d.getTime())) return dateString
+
+  const MM = String(d.getMonth() + 1).padStart(2, '0')
+  const DD = String(d.getDate()).padStart(2, '0')
+  const HH = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  
+  return `${MM}.${DD} ${HH}:${mm}`
+}
+
 async function load() {
   try {
-    const response = await fetch(API.POST_DETAIL(postId.value))
-    const data = await response.json()
-    item.value = data
+    if (!postId.value || postId.value === 'undefined') {
+      router.push('/board')
+      return
+    }
 
-    // 하단 추천 게시글 데이터
+    // 현재 글 상세 조회
+    const response = await fetch(API.POST_DETAIL(postId.value))
+    if (!response.ok) {
+      alert('존재하지 않는 게시글입니다.')
+      router.push('/board')
+      return
+    }
+    const data = await response.json()
+    
+    // 화면 변수에 넣기 전에 카테고리 번역 + 날짜 포맷팅 적용
+    item.value = {
+      ...data,
+      category: catToFront[data.category] || data.category || '자유',
+      created_at: formatDetailDate(data.created_at) // 💡 날짜 예쁘게!
+    }
+
+    // 💡 2. 하단 추천용 전체 글 목록 조회 및 필터링
     const allRes = await fetch(API.POSTS)
     const allData = await allRes.json()
     const list = Array.isArray(allData) ? allData : (allData.items || [])
-    recentPosts.value = list.filter(x => String(x.post_id || x.id) !== String(postId.value)).slice(0, 4)
+    
+    // 같은 카테고리의 다른 게시글 5개 필터링 로직
+    recentPosts.value = list
+      .map(p => ({
+        ...p,
+        category: catToFront[p.category] || p.category || '자유',
+        created_at: formatDetailDate(p.created_at) // 추천 목록 날짜도 예쁘게!
+      }))
+      .filter(p => String(p.id) !== String(postId.value)) // 현재 보고 있는 글 제외
+      .filter(p => p.category === item.value.category)    // 🔥 현재 글과 '같은 카테고리'만 남기기
+      .slice(0, 5)                                        // 🔥 딱 5개까지만 자르기
+
   } catch (error) {
     console.error('상세 정보 불러오기 실패:', error)
   }
@@ -92,6 +135,9 @@ watch(postId, load)
           <span class="meta-item writer">✍️ 익명 로컬러</span>
           <span class="meta-divider">|</span>
           <span class="meta-item date">📅 작성일: {{ item.created_at }}</span>
+          
+          <span class="meta-divider">|</span>
+          <span class="meta-item views">👀 조회수: {{ item.views ?? item.view_count ?? item.hits ?? item.read_count ?? 0 }}</span>
         </div>
       </header>
 
@@ -124,21 +170,21 @@ watch(postId, load)
         <button class="recent-link" @click="goList" aria-label="게시글 목록으로 이동">전체보기 →</button>
       </div>
       
-      <ul class="recent-grid">
+      <ul class="recent-list">
         <li
           v-for="p in recentPosts"
-          :key="p.post_id || p.id"
-          class="recent-card"
-          @click="openDetail(p.post_id || p.id)"
-          @keydown.enter.prevent="openDetail(p.post_id || p.id)"
+          :key="p.id"
+          class="recent-list-item"
+          @click="openDetail(p.id)"
+          @keydown.enter.prevent="openDetail(p.id)"
           tabindex="0"
           role="button"
         >
-          <div class="recent-row-top">
+          <div class="item-left">
             <span class="recent-badge">{{ p.category || '로컬소식' }}</span>
+            <span class="recent-name">{{ p.title }}</span>
           </div>
-          <span class="recent-name">{{ p.title }}</span>
-          <p class="recent-excerpt">{{ (p.content || '').slice(0, 50) }}{{ (p.content||'').length > 50 ? '…' : '' }}</p>
+          <span class="recent-date">{{ p.created_at }}</span>
         </li>
       </ul>
     </section>
@@ -172,6 +218,7 @@ watch(postId, load)
 </template>
 
 <style scoped>
+/* 💡 최상위 컨테이너를 1200px로 변경했습니다. */
 .detail-page {
   --primary-color: #2563eb;
   --primary-hover: #1d4ed8;
@@ -182,7 +229,7 @@ watch(postId, load)
   --text-main: #0f172a;
   --text-sub: #64748b;
   
-  max-width: 900px;
+  max-width: 1200px; /* 💡 900px -> 1200px 로 통일 */
   width: 100%;
   margin: 0 auto;
   padding: 24px 16px;
@@ -196,6 +243,7 @@ watch(postId, load)
 .breadcrumb .arrow { color: #cbd5e1; font-weight: bold; }
 .breadcrumb .current { color: #475569; font-weight: 600; }
 
+/* 💡 본문 카드 영역도 100% 꽉 차게 고정 */
 .post-card {
   background: var(--bg-card);
   padding: 32px;
@@ -204,6 +252,8 @@ watch(postId, load)
   display: flex;
   flex-direction: column;
   gap: 24px;
+  width: 100%;           /* 💡 추가 */
+  box-sizing: border-box;  /* 💡 추가 */
 }
 
 .post-header { display: flex; flex-direction: column; gap: 12px; border-bottom: 1px solid #f1f5f9; padding-bottom: 20px; }
@@ -217,7 +267,7 @@ watch(postId, load)
 .empty-content { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 0; color: var(--text-sub); }
 .empty-emoji { font-size: 32px; margin-bottom: 8px; }
 
-/* 💡 해시태그 디자인 복구 완료 */
+/* 해시태그 디자인 */
 .hashtag-container {
   display: flex;
   flex-wrap: wrap;
@@ -244,20 +294,81 @@ watch(postId, load)
 .btn-delete { background: #fff; border-color: #fee2e2; color: var(--danger-color); }
 .btn-delete:hover { background: #fef2f2; border-color: #fca5a5; transform: translateY(-1px); }
 
-.recent-block { margin-top: 32px; background: var(--bg-card); padding: 24px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 0 0 1px var(--border-light); }
+/* 💡 하단 추천 게시글 블록도 넓어진 1200px에 꽉 차게 고정 */
+.recent-block { 
+  margin-top: 32px; 
+  background: var(--bg-card); 
+  padding: 24px; 
+  border-radius: 16px; 
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 0 0 1px var(--border-light); 
+  width: 100%;           /* 💡 추가 */
+  box-sizing: border-box;  /* 💡 추가 */
+}
 .recent-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .recent-title { margin: 0; font-size: 16px; font-weight: 800; color: var(--text-main); }
 .recent-link { background: none; border: none; padding: 0; color: var(--primary-color); font-weight: 700; font-size: 13px; cursor: pointer; }
 
-.recent-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; list-style: none; padding: 0; margin: 0; }
-.recent-card { border: 1px solid #f1f5f9; padding: 16px; border-radius: 12px; cursor: pointer; background: #fff; transition: all 0.2s ease; display: flex; flex-direction: column; }
-.recent-card:hover, .recent-card:focus { border-color: #bfdbfe; box-shadow: 0 8px 24px -8px rgba(37,99,235,0.12); transform: translateY(-3px); outline: none; }
-.recent-row-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.recent-badge { font-size: 10px; font-weight: 700; background: #f8fafc; color: #64748b; padding: 2px 6px; border-radius: 4px; }
-.recent-name { font-weight: 700; color: var(--text-main); font-size: 14px; line-height: 1.3; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recent-card:hover .recent-name { color: var(--primary-color); }
-.recent-excerpt { margin: 0; color: var(--text-sub); font-size: 12px; line-height: 1.5; height: 36px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* 세로형 리스트 */
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.recent-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid #f1f5f9;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.recent-list-item:hover, .recent-list-item:focus {
+  border-color: #bfdbfe;
+  background-color: #f8fafc;
+  transform: translateX(4px);
+  outline: none;
+}
+.item-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.recent-badge {
+  font-size: 11px;
+  font-weight: 700;
+  background: #eff6ff;
+  color: var(--primary-color);
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.recent-name {
+  font-weight: 600;
+  color: var(--text-main);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-list-item:hover .recent-name {
+  color: var(--primary-color);
+}
+.recent-date {
+  color: var(--text-sub);
+  font-size: 12px;
+  white-space: nowrap;
+  margin-left: 12px;
+}
 
+/* 모달 디자인 */
 .modal-backdrop { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.4); backdrop-filter: blur(4px); z-index: 9999; }
 .modal { width: 360px; max-width: calc(100% - 32px); background: #fff; padding: 28px 24px; border-radius: 16px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); text-align: center; border: 1px solid var(--border-light); }
 .modal-icon { font-size: 32px; margin-bottom: 12px; }
@@ -271,15 +382,21 @@ watch(postId, load)
 .modal-confirm:hover { background: var(--primary-hover); }
 .modal-cancel { background: #fff; border-color: #cbd5e1; color: #475569; }
 .modal-cancel:hover { background: #f8fafc; }
-
 .err { color: var(--danger-color); margin-top: 8px; font-size: 12px; font-weight: 600; }
-
 .fade-enter-active, .fade-leave-active { transition: opacity 0.25s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-@media (max-width: 880px) { .recent-grid { grid-template-columns: repeat(2, 1fr); } }
+/* 모바일 기기 반응형 처리 */
 @media (max-width: 640px) {
-  .recent-grid { grid-template-columns: 1fr; }
+  .recent-list-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .recent-date {
+    margin-left: 0;
+    align-self: flex-end;
+  }
   .post-card { padding: 20px; }
   .post-title { font-size: 20px; }
   .post-actions { flex-direction: column-reverse; align-items: stretch; gap: 10px; }
