@@ -38,3 +38,9 @@ __screenshots__/
 # Vite
 *.timestamp-*-*.mjs
 .env
+
+# SQLite database
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.db-journal
