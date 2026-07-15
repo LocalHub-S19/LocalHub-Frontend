@@ -97,13 +97,16 @@ function goWrite() {
 onMounted(load)
 
 watch(() => route.query.category, (newCat) => {
-  if (newCat && categories.includes(newCat)) {
-    selectedCategory.value = newCat
-  } else if (!newCat) {
-    selectedCategory.value = '전체'
+  if (newCat) {
+    selectedCategory.value = newCat; // URL 파라미터가 바뀌면 카테고리 변경
+    page.value = 1;                  // 페이지도 1페이지로 리셋
+    load();                          // 바뀐 카테고리로 서버에서 데이터 새로 호출!
+  } else {
+    selectedCategory.value = '전체';
+    page.value = 1;
+    load();
   }
-  page.value = 1
-})
+}, { immediate: true });
 
 // 💡 5. 사용자가 2번, 3번 페이지 버튼을 누를 때마다 서버에서 새 데이터를 불러오도록 감시
 watch(page, () => {
@@ -148,9 +151,6 @@ watch(page, () => {
         </div>
         <button class="search-btn" @click="doSearch">검색</button>
       </div>
-      <button class="write-btn" @click="goWrite">
-        <span class="plus-icon">+</span> 새 글 쓰기
-      </button>
     </div>
 
     <div class="table-wrap">
@@ -248,9 +248,6 @@ watch(page, () => {
 .search-input-wrapper input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
 .search-btn { background: #0f172a; color: #fff; border: none; padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background-color 0.15s ease; white-space: nowrap; }
 .search-btn:hover { background: #1e293b; }
-.write-btn { background: #2563eb; color: #fff; border: none; padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15); transition: all 0.2s ease; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.write-btn:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 6px 16px rgba(37, 99, 235, 0.25); }
-.plus-icon { font-size: 16px; font-weight: bold; }
 
 /* 💡 테이블을 감싸는 박스와 고정 레이아웃 */
 .table-wrap { 
@@ -317,7 +314,6 @@ watch(page, () => {
 @media (max-width: 640px) {
   .list-controls { flex-direction: column-reverse; align-items: stretch; }
   .search-area { max-width: 100%; }
-  .write-btn { justify-content: center; }
   .col-num, .col-views, .num, .views { display: none; }
   .col-date { width: 80px; }
   .badge-cat { display: none; }
