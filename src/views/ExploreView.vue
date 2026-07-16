@@ -1711,36 +1711,107 @@ function normalizeRouteInfo(path) {
   }
 }
 
+function extractOdsayError(errorPayload) {
+  // ODsay 오류 응답은 API/상황에 따라 객체 또는 배열로 내려올 수 있습니다.
+  const error = Array.isArray(errorPayload)
+    ? errorPayload[0]
+    : errorPayload
+
+  if (!error || typeof error !== 'object') return null
+
+  const code = String(
+    error.code ?? error.errorCode ?? '',
+  ).trim()
+  const message = String(
+    error.msg ??
+      error.message ??
+      error.errorMessage ??
+      'ODsay 요청을 처리하지 못했습니다.',
+  ).trim()
+
+  return { code, message }
+}
+
 async function requestOdsayRoute() {
+  const start = routeStart.value
+  const end = routeEnd.value
+
+  if (!start || !end) {
+    throw new Error('출발지와 도착지를 모두 선택해주세요.')
+  }
+
+  if (!hasValidCoordinates(start) || !hasValidCoordinates(end)) {
+    throw new Error('출발지 또는 도착지의 좌표가 올바르지 않습니다.')
+  }
+
   const params = new URLSearchParams({
-    SX: String(routeStart.value.longitude),
-    SY: String(routeStart.value.latitude),
-    EX: String(routeEnd.value.longitude),
-    EY: String(routeEnd.value.latitude),
+    SX: String(start.longitude),
+    SY: String(start.latitude),
+    EX: String(end.longitude),
+    EY: String(end.latitude),
     OPT: '0',
+    SearchType: '0',
     SearchPathType: '0',
+    lang: '0',
     apiKey: ODSAY_API_KEY,
   })
 
   const response = await fetch(
     `https://api.odsay.com/v1/api/searchPubTransPathT?${params}`,
   )
-  const data = await response.json().catch(() => null)
 
-  if (!response.ok) {
-    throw new Error(`ODsay 경로 API 요청 실패 (${response.status})`)
+  const responseText = await response.text()
+  let data = null
+
+  try {
+    data = responseText ? JSON.parse(responseText) : null
+  } catch (parseError) {
+    console.error('[ODsay 응답 JSON 변환 실패]', {
+      status: response.status,
+      responseText,
+      parseError,
+    })
   }
 
-  if (data?.error) {
+  // API Key는 출력하지 않고 좌표와 실제 응답만 확인합니다.
+  console.info('[ODsay 대중교통 경로 응답]', {
+    status: response.status,
+    start: {
+      title: start.title,
+      longitude: start.longitude,
+      latitude: start.latitude,
+    },
+    end: {
+      title: end.title,
+      longitude: end.longitude,
+      latitude: end.latitude,
+    },
+    data,
+  })
+
+  if (!response.ok) {
+    const odsayError = extractOdsayError(data?.error)
+    const detail = odsayError
+      ? `${odsayError.code ? `[${odsayError.code}] ` : ''}${odsayError.message}`
+      : `HTTP ${response.status}`
+
+    throw new Error(`ODsay 경로 API 요청 실패: ${detail}`)
+  }
+
+  const odsayError = extractOdsayError(data?.error)
+
+  if (odsayError) {
     throw new Error(
-      data.error.msg || data.error.message || '경로를 찾지 못했습니다.',
+      `ODsay 오류${odsayError.code ? ` [${odsayError.code}]` : ''}: ${odsayError.message}`,
     )
   }
 
   const paths = data?.result?.path
 
   if (!Array.isArray(paths) || !paths.length) {
-    throw new Error('두 장소 사이의 대중교통 경로를 찾지 못했습니다.')
+    throw new Error(
+      '대중교통 경로가 없습니다. 두 장소가 너무 가깝거나 정류장 접근이 어려운 위치일 수 있습니다.',
+    )
   }
 
   return paths[0]
