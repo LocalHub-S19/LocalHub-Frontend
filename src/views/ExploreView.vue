@@ -9,18 +9,21 @@ import {
 } from 'vue'
 
 import { API } from '@/api.js'
+import { useRoute } from 'vue-router'
 
 /**
- * [신규 페이지] LocalHub 지도 탐색
+ * [신규 페이지] LocalHub 서울 여행 탐색
  *
  * 주요 기능
- * 1. Leaflet + OpenStreetMap 기반 서울 지역정보 핀 표시
- * 2. 카테고리별 핀 색상·아이콘 및 개별 표시/숨김
- * 3. 장소명·주소 검색, 이미지 보유 장소 필터
- * 4. 핀 선택 시 상세 API로 이미지·주소·전화·분류 정보 표시
- * 5. 두 장소를 출발지/도착지로 지정하고 ODsay 대중교통 경로 표시
- * 6. 상단에 서울 현재 날씨와 여행 적합도 표시
- * 7. 기존 Home/Board 화면과 유사한 카드·색상·반응형 규칙 적용
+ * 1. 목록/지도 두 개 탭으로 동일한 지역정보 탐색
+ * 2. 목록 카드에 이미지·주소·전화번호·카테고리 표시
+ * 3. Leaflet + OpenStreetMap 기반 서울 지역정보 핀 표시
+ * 4. 카테고리별 핀 색상·아이콘 및 개별 표시/숨김
+ * 5. 장소명·주소 검색, 이미지 보유 장소 필터
+ * 6. 핀 선택 시 상세 API로 이미지·주소·전화·분류 정보 표시
+ * 7. 두 장소를 출발지/도착지로 지정하고 ODsay 대중교통 경로 표시
+ * 8. 상단에 서울 현재 날씨와 여행 적합도 표시
+ * 9. 기존 Home/Board 화면과 유사한 카드·색상·반응형 규칙 적용
  *
  * 충돌 방지를 위해 이 파일만 추가하며 Home/Header/Router는 수정하지 않습니다.
  */
@@ -30,6 +33,13 @@ const LEAFLET_VERSION = '1.9.4'
 const LEAFLET_CSS_URL = `https://cdn.jsdelivr.net/npm/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`
 const LEAFLET_JS_URL = `https://cdn.jsdelivr.net/npm/leaflet@${LEAFLET_VERSION}/dist/leaflet.js`
 const ODSAY_API_KEY = String(import.meta.env.VITE_ODSAY_API_KEY || '').trim()
+// 목록/지도 모두 일반 지역정보 API의 페이지네이션을 사용합니다.
+// /api/locations/map은 limit 상한이 있어 전체 데이터를 가져올 수 없으므로,
+// 전체 조회가 필요한 경우 /api/locations를 페이지 단위로 호출합니다.
+const LIST_FETCH_SIZE = 100
+const MAP_FETCH_SIZE = 100
+const LIST_INITIAL_LIMIT = 24
+const LIST_MORE_SIZE = 24
 
 const CATEGORY_CONFIG = [
   { id: '관광지', label: '관광지', emoji: '🗺️', color: '#2563eb' },
@@ -49,19 +59,51 @@ const INITIAL_CATEGORIES = [
   '음식점',
 ]
 
+const route = useRoute()
+
+const activeTab = ref(
+  route.query.tab === 'map' ? 'map' : 'list',
+)
+
 const mapElement = ref(null)
 const mapReady = ref(false)
-const mapLoading = ref(true)
+const mapLoading = ref(false)
 const mapError = ref('')
 
 const selectedCategories = ref([...INITIAL_CATEGORIES])
+
+// [수정] 지도 데이터도 페이지 단위로 저장합니다.
 const categoryCache = ref({})
+const categoryPagination = ref({})
 const categoryLoading = ref({})
+
 const searchResults = ref([])
+const searchPagination = ref({})
+
+const mapMoreLoading = ref(false)
+const mapAllLoading = ref(false)
+
 const searchInput = ref('')
 const appliedKeyword = ref('')
 const imageOnly = ref(false)
 const dataError = ref('')
+
+const listCategoryCache = ref({})
+const listCategoryPagination = ref({})
+
+const listSearchResults = ref([])
+const listSearchPagination = ref({})
+
+const listCategoryLoading = ref({})
+const listLoading = ref(true)
+const listMoreLoading = ref(false)
+const listError = ref('')
+const listDisplayLimit = ref(LIST_INITIAL_LIMIT)
+const listImageFailures = ref({})
+
+// [추가] 현재 Leaflet 화면 범위입니다.
+// 카테고리를 바꿔도 지도의 중심과 줌을 유지하고, 이 범위 안의 핀만 표시합니다.
+const mapViewport = ref(null)
 
 const selectedPlace = ref(null)
 const detailLoading = ref(false)
@@ -94,7 +136,7 @@ const allCategoriesSelected = computed(
   () => selectedCategories.value.length === CATEGORY_CONFIG.length,
 )
 
-const activeLocations = computed(() => {
+const mapLoadedRawLocations = computed(() => {
   const source = appliedKeyword.value
     ? searchResults.value
     : selectedCategories.value.flatMap(
@@ -112,17 +154,137 @@ const activeLocations = computed(() => {
       return
     }
 
-    if (!hasValidCoordinates(location)) {
-      return
-    }
-
     unique.set(String(location.content_id), location)
   })
 
   return [...unique.values()]
 })
 
-const previewLocations = computed(() => activeLocations.value.slice(0, 12))
+const activeLocations = computed(() =>
+  mapLoadedRawLocations.value.filter((location) =>
+    hasValidCoordinates(location),
+  ),
+)
+
+// [추가] 현재 지도 화면 안에 들어오는 장소만 실제 핀과 목록에 표시합니다.
+const visibleLocations = computed(() =>
+  activeLocations.value.filter((location) => isLocationInViewport(location)),
+)
+
+const previewLocations = computed(() => visibleLocations.value.slice(0, 12))
+
+const activeListLocations = computed(() => {
+  const source = appliedKeyword.value
+    ? listSearchResults.value
+    : selectedCategories.value.flatMap(
+        (category) => listCategoryCache.value[category] || [],
+      )
+
+  const unique = new Map()
+
+  source.forEach((location) => {
+    if (!selectedCategories.value.includes(location.category)) {
+      return
+    }
+
+    if (imageOnly.value && !getListImage(location)) {
+      return
+    }
+
+    unique.set(String(location.content_id), location)
+  })
+
+  return [...unique.values()].sort((a, b) =>
+    String(a.title || '').localeCompare(String(b.title || ''), 'ko'),
+  )
+})
+
+const displayedListLocations = computed(() =>
+  activeListLocations.value.slice(0, listDisplayLimit.value),
+)
+
+const currentListPagination = computed(() =>
+  appliedKeyword.value
+    ? listSearchPagination.value
+    : listCategoryPagination.value,
+)
+
+const currentMapPagination = computed(() =>
+  appliedKeyword.value
+    ? searchPagination.value
+    : categoryPagination.value,
+)
+
+const listHasMoreOnServer = computed(() =>
+  selectedCategories.value.some(
+    (category) => currentListPagination.value[category]?.hasMore,
+  ),
+)
+
+const mapHasMoreOnServer = computed(() =>
+  selectedCategories.value.some(
+    (category) => currentMapPagination.value[category]?.hasMore,
+  ),
+)
+
+const listAvailableTotal = computed(() => {
+  if (imageOnly.value) return activeListLocations.value.length
+
+  const totals = selectedCategories.value.map(
+    (category) => currentListPagination.value[category]?.total,
+  )
+
+  if (
+    totals.length &&
+    totals.every((total) => Number.isFinite(Number(total)))
+  ) {
+    const serverTotal = totals.reduce(
+      (sum, total) => sum + Number(total),
+      0,
+    )
+
+    // 서버 total 값이 오래된 배포 코드 때문에 100으로 고정되어도
+    // 실제로 추가 적재된 목록 수보다 작아지지 않도록 보정합니다.
+    return Math.max(serverTotal, activeListLocations.value.length)
+  }
+
+  return activeListLocations.value.length
+})
+
+const mapAvailableTotal = computed(() => {
+  if (imageOnly.value) return mapLoadedRawLocations.value.length
+
+  const totals = selectedCategories.value.map(
+    (category) => currentMapPagination.value[category]?.total,
+  )
+
+  if (
+    totals.length &&
+    totals.every((total) => Number.isFinite(Number(total)))
+  ) {
+    return totals.reduce((sum, total) => sum + Number(total), 0)
+  }
+
+  return mapLoadedRawLocations.value.length
+})
+
+const hasMoreListLocations = computed(
+  () =>
+    displayedListLocations.value.length < activeListLocations.value.length ||
+    listHasMoreOnServer.value,
+)
+
+const currentResultCount = computed(() =>
+  activeTab.value === 'list'
+    ? listAvailableTotal.value
+    : visibleLocations.value.length,
+)
+
+const currentResultLabel = computed(() =>
+  activeTab.value === 'list'
+    ? '전체 목록 결과'
+    : '현재 화면 핀',
+)
 
 const selectedCategoryLabels = computed(() =>
   selectedCategories.value.map(
@@ -214,11 +376,94 @@ function getListImage(location) {
   )
 }
 
+function getLocationAddress(location) {
+  return joinAddress(location?.addr1, location?.addr2)
+}
+
+function isListImageFailed(location) {
+  return Boolean(listImageFailures.value[String(location?.content_id)])
+}
+
+function handleListImageError(location) {
+  listImageFailures.value = {
+    ...listImageFailures.value,
+    [String(location?.content_id)]: true,
+  }
+}
+
+async function loadMoreListLocations() {
+  if (listMoreLoading.value) return
+
+  listMoreLoading.value = true
+  listError.value = ''
+
+  try {
+    // [수정] 더 보기를 누를 때마다 서버의 다음 페이지를 즉시 요청합니다.
+    // 기존처럼 100개 버퍼를 거의 다 본 뒤에야 요청하지 않으므로,
+    // 카테고리 하나만 선택해도 100 → 200 → 300건으로 계속 확장됩니다.
+    if (listHasMoreOnServer.value) {
+      await loadNextListPages()
+    }
+
+    // 서버에서 받아온 데이터 중 화면에는 24개씩 추가 표시합니다.
+    listDisplayLimit.value = Math.min(
+      listDisplayLimit.value + LIST_MORE_SIZE,
+      activeListLocations.value.length,
+    )
+  } catch (error) {
+    console.error('[목록 다음 페이지 불러오기 실패]', error)
+    listError.value =
+      error.message || '다음 장소 목록을 불러오지 못했습니다.'
+  } finally {
+    listMoreLoading.value = false
+  }
+}
+
 function hasValidCoordinates(location) {
   return (
     Number.isFinite(Number(location?.latitude)) &&
     Number.isFinite(Number(location?.longitude))
   )
+}
+
+
+// [추가] Leaflet의 현재 화면 경계를 Vue에서 사용할 수 있는 값으로 저장합니다.
+function updateMapViewport() {
+  if (!leafletMap) return
+
+  const bounds = leafletMap.getBounds()
+
+  mapViewport.value = {
+    north: bounds.getNorth(),
+    south: bounds.getSouth(),
+    east: bounds.getEast(),
+    west: bounds.getWest(),
+  }
+}
+
+// [추가] 장소가 현재 지도 화면 안에 있는지 확인합니다.
+function isLocationInViewport(location) {
+  if (!hasValidCoordinates(location)) return false
+  if (!mapViewport.value) return true
+
+  const latitude = Number(location.latitude)
+  const longitude = Number(location.longitude)
+  const { north, south, east, west } = mapViewport.value
+
+  return (
+    latitude <= north &&
+    latitude >= south &&
+    longitude <= east &&
+    longitude >= west
+  )
+}
+
+// [추가] 사용자가 지도를 이동하거나 확대·축소하면
+// 네트워크 요청 없이 캐시된 데이터 중 현재 화면 안의 핀만 다시 그립니다.
+async function handleViewportChanged() {
+  updateMapViewport()
+  await nextTick()
+  await renderMarkers({ fit: false })
 }
 
 function escapeHtml(value) {
@@ -349,6 +594,10 @@ function initializeMap() {
   routeLayer = L.layerGroup().addTo(leafletMap)
   currentLocationLayer = L.layerGroup().addTo(leafletMap)
 
+  // [추가] 최초 화면 범위를 저장하고, 이후 지도 이동/줌 변경을 감지합니다.
+  updateMapViewport()
+  leafletMap.on('moveend zoomend', handleViewportChanged)
+
   mapReady.value = true
 }
 
@@ -368,20 +617,92 @@ async function fetchJson(url, options = {}) {
   return data
 }
 
-async function fetchCategoryLocations(category, keyword = '') {
+function normalizePageResponse(data, requestedPage, requestedSize) {
+  const items = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.items)
+      ? data.items
+      : []
+
+  const page = Number(data?.page) || requestedPage
+  const size = Number(data?.size) || requestedSize
+
+  const rawTotal = Number(data?.total)
+  const total = Number.isFinite(rawTotal) ? rawTotal : null
+
+  const rawTotalPages = Number(
+    data?.total_pages ?? data?.pages,
+  )
+  const totalPages = Number.isFinite(rawTotalPages)
+    ? rawTotalPages
+    : total !== null
+      ? Math.ceil(total / size)
+      : null
+
+  // [수정] 일부 배포 환경에서 total/total_pages가 현재 페이지 크기처럼
+  // 잘못 내려와도 100건을 꽉 채워 받았다면 다음 페이지를 한 번 더 확인합니다.
+  // 마지막 페이지가 정확히 100건인 경우에는 다음 빈 페이지를 한 번 요청한 뒤 종료됩니다.
+  const serverHasNextPage =
+    totalPages !== null && page < totalPages
+  const currentPageIsFull = items.length >= size
+  const hasMore = serverHasNextPage || currentPageIsFull
+
+  return {
+    items,
+    page,
+    size,
+    total,
+    totalPages,
+    hasMore,
+  }
+}
+
+function mergeLocationItems(currentItems = [], nextItems = []) {
+  const unique = new Map()
+
+  ;[...currentItems, ...nextItems].forEach((location) => {
+    unique.set(String(location.content_id), location)
+  })
+
+  return [...unique.values()]
+}
+
+function replaceCategoryItems(sourceItems, category, items) {
+  return [
+    ...sourceItems.filter((location) => location.category !== category),
+    ...items,
+  ]
+}
+
+async function fetchLocationPage(
+  category,
+  keyword = '',
+  page = 1,
+  size = LIST_FETCH_SIZE,
+) {
   const params = new URLSearchParams({
     category,
-    limit: '500',
+    page: String(page),
+    size: String(size),
   })
 
   if (keyword) {
     params.set('keyword', keyword)
   }
 
-  const data = await fetchJson(`${API.LOCATION_MAP}?${params}`)
-  return Array.isArray(data?.items) ? data.items : []
+  const data = await fetchJson(`${API.LOCATIONS}?${params}`)
+  return normalizePageResponse(data, page, size)
 }
 
+/**
+ * 지도 데이터
+ *
+ * 기존 /api/locations/map?limit=500 방식은 카테고리당 최대 500건까지만
+ * 반환하므로 관광지·쇼핑·음식점 전체를 가져올 수 없습니다.
+ *
+ * 이제 지도도 /api/locations의 page/size를 사용해 다음 페이지를
+ * 계속 불러오고, 좌표가 있는 항목만 핀으로 렌더링합니다.
+ */
 async function ensureCategoryLoaded(category) {
   if (categoryCache.value[category]) return
   if (categoryLoading.value[category]) return
@@ -392,10 +713,20 @@ async function ensureCategoryLoaded(category) {
   }
 
   try {
-    const items = await fetchCategoryLocations(category)
+    const result = await fetchLocationPage(
+      category,
+      '',
+      1,
+      MAP_FETCH_SIZE,
+    )
+
     categoryCache.value = {
       ...categoryCache.value,
-      [category]: items,
+      [category]: result.items,
+    }
+    categoryPagination.value = {
+      ...categoryPagination.value,
+      [category]: result,
     }
   } finally {
     categoryLoading.value = {
@@ -405,25 +736,413 @@ async function ensureCategoryLoaded(category) {
   }
 }
 
-async function loadSelectedCategoryData({ fit = true } = {}) {
+async function ensureMapSearchCategoryLoaded(category) {
+  if (searchPagination.value[category]) return
+  if (categoryLoading.value[category]) return
+
+  categoryLoading.value = {
+    ...categoryLoading.value,
+    [category]: true,
+  }
+
+  try {
+    const result = await fetchLocationPage(
+      category,
+      appliedKeyword.value,
+      1,
+      MAP_FETCH_SIZE,
+    )
+
+    searchResults.value = replaceCategoryItems(
+      searchResults.value,
+      category,
+      result.items,
+    )
+    searchPagination.value = {
+      ...searchPagination.value,
+      [category]: result,
+    }
+  } finally {
+    categoryLoading.value = {
+      ...categoryLoading.value,
+      [category]: false,
+    }
+  }
+}
+
+async function loadNextMapPageForCategory(category) {
+  const pagination = appliedKeyword.value
+    ? searchPagination.value
+    : categoryPagination.value
+
+  const current = pagination[category]
+
+  if (!current?.hasMore || categoryLoading.value[category]) {
+    return
+  }
+
+  categoryLoading.value = {
+    ...categoryLoading.value,
+    [category]: true,
+  }
+
+  try {
+    const result = await fetchLocationPage(
+      category,
+      appliedKeyword.value,
+      current.page + 1,
+      MAP_FETCH_SIZE,
+    )
+
+    if (appliedKeyword.value) {
+      const currentCategoryItems = searchResults.value.filter(
+        (location) => location.category === category,
+      )
+      const merged = mergeLocationItems(
+        currentCategoryItems,
+        result.items,
+      )
+      const addedCount =
+        merged.length - currentCategoryItems.length
+
+      searchResults.value = replaceCategoryItems(
+        searchResults.value,
+        category,
+        merged,
+      )
+      searchPagination.value = {
+        ...searchPagination.value,
+        [category]: {
+          ...result,
+          hasMore: result.hasMore && addedCount > 0,
+        },
+      }
+    } else {
+      const currentCategoryItems =
+        categoryCache.value[category] || []
+      const merged = mergeLocationItems(
+        currentCategoryItems,
+        result.items,
+      )
+      const addedCount =
+        merged.length - currentCategoryItems.length
+
+      categoryCache.value = {
+        ...categoryCache.value,
+        [category]: merged,
+      }
+      categoryPagination.value = {
+        ...categoryPagination.value,
+        [category]: {
+          ...result,
+          hasMore: result.hasMore && addedCount > 0,
+        },
+      }
+    }
+  } finally {
+    categoryLoading.value = {
+      ...categoryLoading.value,
+      [category]: false,
+    }
+  }
+}
+
+async function loadNextMapPages() {
+  const pagination = appliedKeyword.value
+    ? searchPagination.value
+    : categoryPagination.value
+
+  const categories = selectedCategories.value.filter(
+    (category) => pagination[category]?.hasMore,
+  )
+
+  await Promise.all(
+    categories.map((category) =>
+      loadNextMapPageForCategory(category),
+    ),
+  )
+
+  return categories.length
+}
+
+async function loadMoreMapLocations() {
+  if (mapMoreLoading.value || mapAllLoading.value) return
+
+  mapMoreLoading.value = true
+  dataError.value = ''
+
+  try {
+    await loadNextMapPages()
+    await nextTick()
+    await renderMarkers({ fit: false })
+  } catch (error) {
+    console.error('[지도 다음 페이지 불러오기 실패]', error)
+    dataError.value =
+      error.message || '다음 지도 데이터를 불러오지 못했습니다.'
+  } finally {
+    mapMoreLoading.value = false
+  }
+}
+
+async function loadAllMapLocations() {
+  if (mapAllLoading.value || mapMoreLoading.value) return
+
+  mapAllLoading.value = true
+  dataError.value = ''
+
+  try {
+    let safetyCounter = 0
+
+    while (mapHasMoreOnServer.value && safetyCounter < 100) {
+      const loadedCategoryCount = await loadNextMapPages()
+
+      if (!loadedCategoryCount) break
+      safetyCounter += 1
+    }
+
+    await nextTick()
+    await renderMarkers({ fit: false })
+  } catch (error) {
+    console.error('[지도 전체 데이터 불러오기 실패]', error)
+    dataError.value =
+      error.message || '전체 지도 데이터를 불러오지 못했습니다.'
+  } finally {
+    mapAllLoading.value = false
+  }
+}
+
+/**
+ * 목록 데이터
+ *
+ * 첫 페이지 100건만 유지하지 않고, 더 보기 시 다음 page를 실제로
+ * 요청해 기존 결과 뒤에 이어 붙입니다.
+ */
+async function ensureListCategoryLoaded(category) {
+  if (listCategoryCache.value[category]) return
+  if (listCategoryLoading.value[category]) return
+
+  listCategoryLoading.value = {
+    ...listCategoryLoading.value,
+    [category]: true,
+  }
+
+  try {
+    const result = await fetchLocationPage(
+      category,
+      '',
+      1,
+      LIST_FETCH_SIZE,
+    )
+
+    listCategoryCache.value = {
+      ...listCategoryCache.value,
+      [category]: result.items,
+    }
+    listCategoryPagination.value = {
+      ...listCategoryPagination.value,
+      [category]: result,
+    }
+  } finally {
+    listCategoryLoading.value = {
+      ...listCategoryLoading.value,
+      [category]: false,
+    }
+  }
+}
+
+async function ensureListSearchCategoryLoaded(category) {
+  if (listSearchPagination.value[category]) return
+  if (listCategoryLoading.value[category]) return
+
+  listCategoryLoading.value = {
+    ...listCategoryLoading.value,
+    [category]: true,
+  }
+
+  try {
+    const result = await fetchLocationPage(
+      category,
+      appliedKeyword.value,
+      1,
+      LIST_FETCH_SIZE,
+    )
+
+    listSearchResults.value = replaceCategoryItems(
+      listSearchResults.value,
+      category,
+      result.items,
+    )
+    listSearchPagination.value = {
+      ...listSearchPagination.value,
+      [category]: result,
+    }
+  } finally {
+    listCategoryLoading.value = {
+      ...listCategoryLoading.value,
+      [category]: false,
+    }
+  }
+}
+
+async function loadNextListPageForCategory(category) {
+  const pagination = appliedKeyword.value
+    ? listSearchPagination.value
+    : listCategoryPagination.value
+
+  const current = pagination[category]
+
+  if (!current?.hasMore || listCategoryLoading.value[category]) {
+    return
+  }
+
+  listCategoryLoading.value = {
+    ...listCategoryLoading.value,
+    [category]: true,
+  }
+
+  try {
+    const result = await fetchLocationPage(
+      category,
+      appliedKeyword.value,
+      current.page + 1,
+      LIST_FETCH_SIZE,
+    )
+
+    if (appliedKeyword.value) {
+      const currentCategoryItems = listSearchResults.value.filter(
+        (location) => location.category === category,
+      )
+      const merged = mergeLocationItems(
+        currentCategoryItems,
+        result.items,
+      )
+      const addedCount =
+        merged.length - currentCategoryItems.length
+
+      listSearchResults.value = replaceCategoryItems(
+        listSearchResults.value,
+        category,
+        merged,
+      )
+      listSearchPagination.value = {
+        ...listSearchPagination.value,
+        [category]: {
+          ...result,
+          // 같은 페이지가 반복 반환되면 무한 요청하지 않습니다.
+          hasMore: result.hasMore && addedCount > 0,
+        },
+      }
+    } else {
+      const currentCategoryItems =
+        listCategoryCache.value[category] || []
+      const merged = mergeLocationItems(
+        currentCategoryItems,
+        result.items,
+      )
+      const addedCount =
+        merged.length - currentCategoryItems.length
+
+      listCategoryCache.value = {
+        ...listCategoryCache.value,
+        [category]: merged,
+      }
+      listCategoryPagination.value = {
+        ...listCategoryPagination.value,
+        [category]: {
+          ...result,
+          hasMore: result.hasMore && addedCount > 0,
+        },
+      }
+    }
+  } finally {
+    listCategoryLoading.value = {
+      ...listCategoryLoading.value,
+      [category]: false,
+    }
+  }
+}
+
+async function loadNextListPages() {
+  const pagination = appliedKeyword.value
+    ? listSearchPagination.value
+    : listCategoryPagination.value
+
+  const categories = selectedCategories.value.filter(
+    (category) => pagination[category]?.hasMore,
+  )
+
+  await Promise.all(
+    categories.map((category) =>
+      loadNextListPageForCategory(category),
+    ),
+  )
+}
+
+async function loadSelectedListData({ resetSearch = false } = {}) {
+  listError.value = ''
+  listLoading.value = true
+  listDisplayLimit.value = LIST_INITIAL_LIMIT
+
+  try {
+    if (appliedKeyword.value) {
+      if (resetSearch) {
+        listSearchResults.value = []
+        listSearchPagination.value = {}
+      }
+
+      await Promise.all(
+        selectedCategories.value.map((category) =>
+          ensureListSearchCategoryLoaded(category),
+        ),
+      )
+    } else {
+      await Promise.all(
+        selectedCategories.value.map((category) =>
+          ensureListCategoryLoaded(category),
+        ),
+      )
+
+      listSearchResults.value = []
+      listSearchPagination.value = {}
+    }
+  } catch (error) {
+    console.error('[목록 데이터 불러오기 실패]', error)
+    listError.value = error.message || '장소 목록을 불러오지 못했습니다.'
+  } finally {
+    listLoading.value = false
+  }
+}
+
+async function loadSelectedCategoryData({
+  fit = true,
+  resetSearch = false,
+} = {}) {
+  if (!mapReady.value) return
+
   dataError.value = ''
   mapLoading.value = true
 
   try {
     if (appliedKeyword.value) {
-      const results = await Promise.all(
+      if (resetSearch) {
+        searchResults.value = []
+        searchPagination.value = {}
+      }
+
+      await Promise.all(
         selectedCategories.value.map((category) =>
-          fetchCategoryLocations(category, appliedKeyword.value),
+          ensureMapSearchCategoryLoaded(category),
         ),
       )
-      searchResults.value = results.flat()
     } else {
       await Promise.all(
         selectedCategories.value.map((category) =>
           ensureCategoryLoaded(category),
         ),
       )
+
       searchResults.value = []
+      searchPagination.value = {}
     }
 
     await nextTick()
@@ -485,7 +1204,7 @@ async function renderMarkers({ fit = false } = {}) {
 
   const bounds = []
 
-  activeLocations.value.forEach((location) => {
+  visibleLocations.value.forEach((location) => {
     if (currentSequence !== renderMarkerSequence) return
 
     const latitude = Number(location.latitude)
@@ -558,12 +1277,97 @@ async function selectLocation(location) {
   }
 }
 
+async function ensureMapInitialized() {
+  if (mapReady.value) {
+    await nextTick()
+    leafletMap?.invalidateSize()
+
+    // [수정] 지도 탭으로 다시 들어왔을 때 아직 남은 페이지가 있다면
+    // 선택된 카테고리의 지도 데이터를 끝까지 불러옵니다.
+    if (mapHasMoreOnServer.value) {
+      await loadAllMapLocations()
+    }
+
+    updateMapViewport()
+    await renderMarkers({ fit: false })
+    return
+  }
+
+  mapLoading.value = true
+  mapError.value = ''
+
+  try {
+    await loadLeaflet()
+    await nextTick()
+    initializeMap()
+
+    // [수정] 각 카테고리의 첫 페이지를 준비한 뒤,
+    // 목록 로직은 그대로 두고 지도 데이터만 마지막 페이지까지 자동 적재합니다.
+    await loadSelectedCategoryData({ fit: false })
+    await loadAllMapLocations()
+
+    await nextTick()
+    leafletMap?.invalidateSize()
+    updateMapViewport()
+    await renderMarkers({ fit: false })
+  } catch (error) {
+    console.error('[지도 초기화 실패]', error)
+    mapError.value = error.message || '지도를 초기화하지 못했습니다.'
+  } finally {
+    mapLoading.value = false
+  }
+}
+
+async function switchTab(tab) {
+  activeTab.value = tab
+
+  if (tab === 'map') {
+    await nextTick()
+    await ensureMapInitialized()
+  }
+}
+
 async function focusLocation(location) {
   await selectLocation(location)
   await nextTick()
 
   const marker = markerById.get(String(location.content_id))
   marker?.openPopup()
+}
+
+async function openLocationOnMap(location) {
+  if (!hasValidCoordinates(location)) return
+
+  await switchTab('map')
+
+  leafletMap?.setView(
+    [Number(location.latitude), Number(location.longitude)],
+    15,
+    { animate: false },
+  )
+
+  updateMapViewport()
+  await nextTick()
+  await renderMarkers({ fit: false })
+  await focusLocation(location)
+}
+
+async function setRoutePointFromList(type, location) {
+  if (!hasValidCoordinates(location)) return
+
+  const point = createRoutePoint(location)
+
+  if (type === 'start') {
+    routeStart.value = point
+  } else {
+    routeEnd.value = point
+  }
+
+  routeError.value = ''
+  routeInfo.value = null
+  clearRouteLayer()
+
+  await openLocationOnMap(location)
 }
 
 async function toggleCategory(category) {
@@ -578,7 +1382,14 @@ async function toggleCategory(category) {
     selectedCategories.value = [...selectedCategories.value, category]
   }
 
-  await loadSelectedCategoryData({ fit: true })
+  await loadSelectedListData()
+
+  // [수정] 카테고리를 바꿔도 현재 중심과 줌을 유지하면서,
+  // 새로 선택된 카테고리의 지도 데이터는 마지막 페이지까지 불러옵니다.
+  if (mapReady.value) {
+    await loadSelectedCategoryData({ fit: false })
+    await loadAllMapLocations()
+  }
 }
 
 async function toggleAllCategories() {
@@ -586,19 +1397,52 @@ async function toggleAllCategories() {
     ? [...INITIAL_CATEGORIES]
     : CATEGORY_CONFIG.map((category) => category.id)
 
-  await loadSelectedCategoryData({ fit: true })
+  await loadSelectedListData()
+
+  // [수정] 전체/기본 카테고리를 바꿔도 현재 중심과 줌을 유지하면서,
+  // 선택된 모든 카테고리의 지도 데이터를 마지막 페이지까지 불러옵니다.
+  if (mapReady.value) {
+    await loadSelectedCategoryData({ fit: false })
+    await loadAllMapLocations()
+  }
 }
 
 async function applySearch() {
   appliedKeyword.value = searchInput.value.trim()
-  await loadSelectedCategoryData({ fit: true })
+
+  await loadSelectedListData({
+    resetSearch: true,
+  })
+
+  if (mapReady.value) {
+    // [수정] 검색 결과도 첫 100건에서 멈추지 않고
+    // 선택된 카테고리별 마지막 페이지까지 모두 불러옵니다.
+    await loadSelectedCategoryData({
+      fit: false,
+      resetSearch: true,
+    })
+    await loadAllMapLocations()
+    fitVisibleMarkers()
+  }
 }
 
 async function clearSearch() {
   searchInput.value = ''
   appliedKeyword.value = ''
+
   searchResults.value = []
-  await loadSelectedCategoryData({ fit: true })
+  searchPagination.value = {}
+  listSearchResults.value = []
+  listSearchPagination.value = {}
+
+  await loadSelectedListData()
+
+  // [수정] 검색을 지워도 현재 보고 있던 지도 위치를 유지하면서,
+  // 기본 카테고리 데이터도 마지막 페이지까지 다시 확인합니다.
+  if (mapReady.value) {
+    await loadSelectedCategoryData({ fit: false })
+    await loadAllMapLocations()
+  }
 }
 
 function fitVisibleMarkers() {
@@ -1082,8 +1926,12 @@ async function loadWeather() {
 }
 
 watch(imageOnly, async () => {
-  await nextTick()
-  await renderMarkers({ fit: false })
+  listDisplayLimit.value = LIST_INITIAL_LIMIT
+
+  if (mapReady.value) {
+    await nextTick()
+    await renderMarkers({ fit: false })
+  }
 })
 
 watch(
@@ -1094,18 +1942,15 @@ watch(
 )
 
 onMounted(async () => {
-  try {
-    await loadLeaflet()
-    initializeMap()
-    await Promise.all([
-      loadSelectedCategoryData({ fit: true }),
-      loadWeather(),
-    ])
-  } catch (error) {
-    console.error('[지도 초기화 실패]', error)
-    mapError.value = error.message || '지도를 초기화하지 못했습니다.'
-  } finally {
-    mapLoading.value = false
+  await Promise.all([
+    loadSelectedListData(),
+    loadWeather(),
+  ])
+
+  // 홈의 지도 카드에서 들어온 경우 지도 탭을 바로 초기화
+  if (activeTab.value === 'map') {
+    await nextTick()
+    await ensureMapInitialized()
   }
 })
 
@@ -1126,21 +1971,21 @@ onBeforeUnmount(() => {
       <span class="home-icon">🏠</span>
       홈
       <span class="arrow">&gt;</span>
-      <span class="current">서울 여행 지도</span>
+      <span class="current">서울 여행 탐색</span>
     </div>
 
     <div class="page-header">
       <div>
         <span class="page-eyebrow">Explore Seoul</span>
-        <h1 class="page-title">서울 여행을 지도에서 한눈에</h1>
+        <h1 class="page-title">서울 여행지를 한눈에 탐색하세요</h1>
         <p class="page-desc">
-          관광지·맛집·축제 등 원하는 카테고리를 골라 보고,
+          사진 중심 목록과 카테고리별 지도 핀을 자유롭게 전환하고,
           두 장소 사이의 대중교통 경로까지 확인해보세요.
         </p>
       </div>
       <div class="header-stat">
-        <strong>{{ activeLocations.length.toLocaleString('ko-KR') }}</strong>
-        <span>현재 표시 장소</span>
+        <strong>{{ currentResultCount.toLocaleString('ko-KR') }}</strong>
+        <span>{{ currentResultLabel }}</span>
       </div>
     </div>
 
@@ -1227,10 +2072,20 @@ onBeforeUnmount(() => {
         <button class="primary-btn" type="button" @click="applySearch">
           검색
         </button>
-        <button class="secondary-btn" type="button" @click="useCurrentLocation">
+        <button
+          v-if="activeTab === 'map'"
+          class="secondary-btn"
+          type="button"
+          @click="useCurrentLocation"
+        >
           ◎ 내 위치
         </button>
-        <button class="secondary-btn" type="button" @click="fitVisibleMarkers">
+        <button
+          v-if="activeTab === 'map'"
+          class="secondary-btn"
+          type="button"
+          @click="fitVisibleMarkers"
+        >
           ⛶ 전체 보기
         </button>
       </div>
@@ -1253,7 +2108,7 @@ onBeforeUnmount(() => {
             <span>{{ category.emoji }}</span>
             {{ category.label }}
             <span
-              v-if="categoryLoading[category.id]"
+              v-if="categoryLoading[category.id] || listCategoryLoading[category.id]"
               class="chip-loading"
               aria-label="불러오는 중"
             />
@@ -1273,20 +2128,222 @@ onBeforeUnmount(() => {
 
       <div v-if="appliedKeyword" class="search-summary">
         <strong>“{{ appliedKeyword }}”</strong> 검색 결과
-        {{ activeLocations.length }}개 ·
+        {{ activeTab === 'list' ? listAvailableTotal : visibleLocations.length }}개 ·
         {{ selectedCategoryLabels.join(', ') }}
       </div>
     </section>
 
-    <div v-if="dataError" class="inline-alert error-alert">
+    <nav class="view-tabs" aria-label="장소 보기 방식">
+      <button
+        type="button"
+        class="view-tab"
+        :class="{ active: activeTab === 'list' }"
+        :aria-selected="activeTab === 'list'"
+        @click="switchTab('list')"
+      >
+        <span class="tab-icon">▦</span>
+        목록으로 보기
+        <strong>{{ listAvailableTotal }}</strong>
+      </button>
+      <button
+        type="button"
+        class="view-tab"
+        :class="{ active: activeTab === 'map' }"
+        :aria-selected="activeTab === 'map'"
+        @click="switchTab('map')"
+      >
+        <span class="tab-icon">🗺️</span>
+        지도에서 보기
+        <strong>{{ activeLocations.length }}</strong>
+      </button>
+    </nav>
+
+    <!-- [추가] 전체 결과와 실제 지도 핀 수를 구분해 표시합니다. -->
+    <section
+      v-if="activeTab === 'map'"
+      class="map-data-status"
+    >
+      <div class="map-data-copy">
+        <strong>지도 데이터 불러오기</strong>
+        <span>
+          전체 결과 {{ mapAvailableTotal.toLocaleString('ko-KR') }}개 ·
+          현재 불러온 데이터 {{ mapLoadedRawLocations.length.toLocaleString('ko-KR') }}개 ·
+          좌표 보유 {{ activeLocations.length.toLocaleString('ko-KR') }}개 ·
+          현재 화면 {{ visibleLocations.length.toLocaleString('ko-KR') }}개
+        </span>
+        <small>
+          주소만 있고 좌표가 없는 장소는 목록에는 표시되지만 지도 핀에서는 제외됩니다.
+        </small>
+      </div>
+
+      <div class="map-data-actions">
+        <button
+          type="button"
+          class="secondary-btn"
+          :disabled="!mapHasMoreOnServer || mapMoreLoading || mapAllLoading"
+          @click="loadMoreMapLocations"
+        >
+          {{
+            mapMoreLoading
+              ? '다음 핀 불러오는 중...'
+              : mapHasMoreOnServer
+                ? '핀 더 불러오기'
+                : '모두 불러옴'
+          }}
+        </button>
+
+        <button
+          type="button"
+          class="primary-btn"
+          :disabled="!mapHasMoreOnServer || mapMoreLoading || mapAllLoading"
+          @click="loadAllMapLocations"
+        >
+          {{
+            mapAllLoading
+              ? '전체 핀 불러오는 중...'
+              : '선택 카테고리 전체 불러오기'
+          }}
+        </button>
+      </div>
+    </section>
+
+    <section v-if="activeTab === 'list'" class="list-view-section">
+      <div v-if="listLoading" class="list-loading-state">
+        <span class="loading-spinner large" />
+        <strong>서울의 장소 목록을 불러오고 있어요.</strong>
+      </div>
+
+      <div v-else-if="listError" class="inline-alert error-alert">
+        <span>⚠️</span>
+        <p>{{ listError }}</p>
+        <button type="button" @click="loadSelectedListData">
+          다시 시도
+        </button>
+      </div>
+
+      <div v-else-if="!activeListLocations.length" class="list-empty-state">
+        <span>🧭</span>
+        <h2>조건에 맞는 장소가 없습니다.</h2>
+        <p>다른 카테고리를 선택하거나 검색어를 바꿔보세요.</p>
+      </div>
+
+      <template v-else>
+        <div class="list-view-header">
+          <div>
+            <span class="card-kicker">Place List</span>
+            <h2>서울 지역정보 목록</h2>
+            <p>
+              사진과 주소를 확인하고, 전화번호가 있는 장소는 바로 연락할 수 있어요.
+            </p>
+          </div>
+          <strong>{{ listAvailableTotal.toLocaleString('ko-KR') }}곳</strong>
+        </div>
+
+        <div class="place-card-grid">
+          <article
+            v-for="location in displayedListLocations"
+            :key="location.content_id"
+            class="place-list-card"
+          >
+            <div class="place-list-image">
+              <img
+                v-if="getListImage(location) && !isListImageFailed(location)"
+                :src="getListImage(location)"
+                :alt="`${location.title} 대표 이미지`"
+                loading="lazy"
+                @error="handleListImageError(location)"
+              />
+              <div v-else class="place-list-image-placeholder">
+                <span>{{ categoryConfig(location.category).emoji }}</span>
+                <small>등록된 이미지가 없습니다.</small>
+              </div>
+              <span
+                class="place-list-category"
+                :style="{
+                  color: categoryConfig(location.category).color,
+                }"
+              >
+                {{ categoryConfig(location.category).label }}
+              </span>
+            </div>
+
+            <div class="place-list-body">
+              <h3>{{ location.title }}</h3>
+
+              <div class="place-list-info">
+                <div>
+                  <span>📍</span>
+                  <p>{{ getLocationAddress(location) || '주소 정보가 없습니다.' }}</p>
+                </div>
+                <div v-if="location.tel">
+                  <span>☎️</span>
+                  <a :href="`tel:${location.tel}`">{{ location.tel }}</a>
+                </div>
+              </div>
+
+              <div class="place-list-actions">
+                <a
+                  v-if="location.tel"
+                  class="list-action-btn phone"
+                  :href="`tel:${location.tel}`"
+                >
+                  전화하기
+                </a>
+                <button
+                  class="list-action-btn"
+                  type="button"
+                  :disabled="!hasValidCoordinates(location)"
+                  @click="openLocationOnMap(location)"
+                >
+                  지도에서 보기
+                </button>
+                <button
+                  class="list-action-btn route"
+                  type="button"
+                  :disabled="!hasValidCoordinates(location)"
+                  @click="setRoutePointFromList('start', location)"
+                >
+                  출발지로
+                </button>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div v-if="hasMoreListLocations" class="list-more-wrap">
+          <button
+            type="button"
+            class="list-more-btn"
+            :disabled="listMoreLoading"
+            @click="loadMoreListLocations"
+          >
+            <span
+              v-if="listMoreLoading"
+              class="button-spinner list-button-spinner"
+            />
+            {{ listMoreLoading ? '다음 장소 불러오는 중...' : '더 보기' }}
+            <span>
+              화면 {{ displayedListLocations.length.toLocaleString('ko-KR') }} ·
+              불러옴 {{ activeListLocations.length.toLocaleString('ko-KR') }} /
+              전체 {{ listAvailableTotal.toLocaleString('ko-KR') }}
+            </span>
+          </button>
+        </div>
+      </template>
+    </section>
+
+    <div
+      v-if="activeTab === 'map' && dataError"
+      class="inline-alert error-alert"
+    >
       <span>⚠️</span>
       <p>{{ dataError }}</p>
-      <button type="button" @click="loadSelectedCategoryData({ fit: true })">
+      <button type="button" @click="loadSelectedCategoryData({ fit: false })">
         다시 시도
       </button>
     </div>
 
-    <section class="map-layout">
+    <section v-show="activeTab === 'map'" class="map-layout">
       <div class="map-card">
         <div ref="mapElement" class="leaflet-map" />
 
@@ -1541,7 +2598,7 @@ onBeforeUnmount(() => {
               <span class="card-kicker">Visible Places</span>
               <h2>지도에 표시된 장소</h2>
             </div>
-            <strong class="result-count">{{ activeLocations.length }}</strong>
+            <strong class="result-count">{{ visibleLocations.length }}</strong>
           </div>
 
           <div v-if="previewLocations.length" class="visible-place-list">
@@ -2075,6 +3132,386 @@ button {
   color: #b91c1c;
   font-weight: 700;
   cursor: pointer;
+}
+
+
+.view-tabs {
+  margin-bottom: 16px;
+  padding: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #dbe3ee;
+  border-radius: 13px;
+  background: #f1f5f9;
+}
+
+.view-tab {
+  min-height: 42px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.view-tab strong {
+  min-width: 24px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #64748b;
+  font-size: 10px;
+  text-align: center;
+}
+
+.view-tab.active {
+  background: #ffffff;
+  color: #1d4ed8;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.09);
+}
+
+.view-tab.active strong {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.tab-icon {
+  font-size: 15px;
+}
+
+.map-data-status {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #eff6ff;
+}
+
+.map-data-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.map-data-copy strong {
+  color: #1e3a8a;
+  font-size: 13px;
+}
+
+.map-data-copy span {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.map-data-copy small {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.map-data-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.map-data-actions button:disabled,
+.list-more-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.list-button-spinner {
+  border-color: #bfdbfe;
+  border-top-color: #2563eb;
+}
+
+.list-view-section {
+  min-height: 320px;
+}
+
+.list-loading-state,
+.list-empty-state {
+  min-height: 320px;
+  padding: 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  background: #ffffff;
+  color: #64748b;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.list-empty-state > span {
+  font-size: 42px;
+}
+
+.list-empty-state h2,
+.list-empty-state p {
+  margin: 0;
+}
+
+.list-empty-state h2 {
+  color: #1e293b;
+  font-size: 18px;
+}
+
+.list-empty-state p {
+  font-size: 13px;
+}
+
+.list-view-header {
+  margin-bottom: 14px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.list-view-header h2 {
+  margin: 0;
+  font-size: 19px;
+  letter-spacing: -0.4px;
+}
+
+.list-view-header p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.list-view-header > strong {
+  min-width: 62px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  text-align: center;
+}
+
+.place-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.place-list-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.045);
+  overflow: hidden;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.place-list-card:hover {
+  transform: translateY(-3px);
+  border-color: #bfdbfe;
+  box-shadow: 0 13px 28px rgba(15, 23, 42, 0.1);
+}
+
+.place-list-image {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+
+.place-list-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.place-list-card:hover .place-list-image img {
+  transform: scale(1.035);
+}
+
+.place-list-image-placeholder {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-content: center;
+  gap: 7px;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(219, 234, 254, 0.9), transparent 35%),
+    linear-gradient(135deg, #f8fafc, #e2e8f0);
+  color: #94a3b8;
+  text-align: center;
+}
+
+.place-list-image-placeholder span {
+  font-size: 38px;
+}
+
+.place-list-image-placeholder small {
+  font-size: 11px;
+}
+
+.place-list-category {
+  position: absolute;
+  top: 11px;
+  left: 11px;
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.12);
+  font-size: 11px;
+  font-weight: 800;
+  backdrop-filter: blur(6px);
+}
+
+.place-list-body {
+  padding: 15px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.place-list-body h3 {
+  margin: 0 0 11px;
+  color: #1e293b;
+  font-size: 16px;
+  line-height: 1.4;
+  letter-spacing: -0.3px;
+}
+
+.place-list-info {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 15px;
+}
+
+.place-list-info > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.place-list-info span {
+  flex: 0 0 auto;
+}
+
+.place-list-info p,
+.place-list-info a {
+  min-width: 0;
+  margin: 0;
+  color: inherit;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.place-list-info a:hover {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.place-list-actions {
+  margin-top: auto;
+  padding-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.list-action-btn {
+  min-height: 36px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.list-action-btn:hover:not(:disabled) {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.list-action-btn.phone {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.list-action-btn.route {
+  border-color: #dbeafe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.list-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.list-more-wrap {
+  margin-top: 22px;
+  display: flex;
+  justify-content: center;
+}
+
+.list-more-btn {
+  min-width: 190px;
+  min-height: 44px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid #bfdbfe;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
+}
+
+.list-more-btn span {
+  color: #94a3b8;
+  font-size: 10px;
 }
 
 .map-layout {
@@ -2829,6 +4266,21 @@ button {
     padding-top: 8px;
   }
 
+  .map-data-status {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .map-data-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .map-data-actions button {
+    width: 100%;
+  }
+
   .page-header {
     align-items: flex-start;
     flex-direction: column;
@@ -2964,4 +4416,64 @@ button {
     grid-column: auto;
   }
 }
+
+@media (max-width: 980px) {
+  .place-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .view-tabs {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .view-tab {
+    flex: 1;
+    justify-content: center;
+    padding: 0 9px;
+  }
+
+  .list-view-header {
+    align-items: flex-start;
+  }
+
+  .list-view-header p {
+    display: none;
+  }
+
+  .place-card-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .place-list-card {
+    display: grid;
+    grid-template-columns: 116px minmax(0, 1fr);
+  }
+
+  .place-list-image {
+    height: 100%;
+    min-height: 180px;
+    aspect-ratio: auto;
+  }
+
+  .place-list-body {
+    padding: 13px;
+  }
+
+  .place-list-body h3 {
+    font-size: 15px;
+  }
+
+  .place-list-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .list-action-btn.phone {
+    display: none;
+  }
+}
+
 </style>

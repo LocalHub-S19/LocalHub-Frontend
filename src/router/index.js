@@ -3,7 +3,7 @@ import HomeView from '../views/HomeView.vue'
 import BoardListView from '../views/BoardListView.vue'
 import BoardDetailView from '../views/BoardDetailView.vue'
 import BoardWriteView from '../views/BoardWriteView.vue'
-import MapView from '../views/MapView.vue'
+import ExploreView from '../views/ExploreView.vue'
 
 const routes = [
   { path: '/', name: 'Home', component: HomeView },
@@ -11,7 +11,7 @@ const routes = [
   { path: '/board/:id', name: 'BoardDetail', component: BoardDetailView, props: true },
   { path: '/board/write', name: 'BoardWrite', component: BoardWriteView },
   { path: '/board/edit/:id', name: 'BoardEdit', component: BoardWriteView, props: true },
-  { path: '/map', name: 'Map', component: MapView,},
+  { path: '/explore', name: 'Explore', component: ExploreView },
 ]
 
 const router = createRouter({
